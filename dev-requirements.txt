@@ -7,7 +7,6 @@ gitpython>=2.1.0
 nose
 codecov
 coverage
-pypi-publisher
 scikit-learn
 scipy
 kubernetes

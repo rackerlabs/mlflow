@@ -35,7 +35,14 @@ class S3ArtifactRepository(ArtifactRepository):
         dest_path = posixpath.join(
             dest_path, os.path.basename(local_file))
         s3_client = self._get_s3_client()
-        s3_client.upload_file(local_file, bucket, dest_path)
+
+        # Check for Encryption at rest
+        s3_encrypt = os.environ.get('MLFLOW_S3_ENABLE_ENCRYPTION').lower() == 'true'
+        extra_args = {}
+        if s3_encrypt:
+            extra_args = {'ServerSideEncryption': 'AES256'}
+
+        s3_client.upload_file(local_file, bucket, dest_path, extra_args=extra_args)
 
     def log_artifacts(self, local_dir, artifact_path=None):
         (bucket, dest_path) = data.parse_s3_uri(self.artifact_uri)
@@ -49,11 +56,18 @@ class S3ArtifactRepository(ArtifactRepository):
                 rel_path = os.path.relpath(root, local_dir)
                 rel_path = relative_path_to_artifact_path(rel_path)
                 upload_path = posixpath.join(dest_path, rel_path)
+
             for f in filenames:
+                # Check for Encryption at rest
+                s3_encrypt = os.environ.get('MLFLOW_S3_ENABLE_ENCRYPTION').lower() == 'true'
+                extra_args = {}
+                if s3_encrypt:
+                    extra_args = {'ServerSideEncryption': 'AES256'}
+
                 s3_client.upload_file(
                         os.path.join(root, f),
                         bucket,
-                        posixpath.join(upload_path, f))
+                        posixpath.join(upload_path, f), extra_args=extra_args)
 
     def list_artifacts(self, path=None):
         (bucket, artifact_path) = data.parse_s3_uri(self.artifact_uri)
