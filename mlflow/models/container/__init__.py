@@ -121,7 +121,9 @@ def _install_pyfunc_deps(model_path=None, install_mlflow=False):
         raise Exception(
             "Failed to install serving dependencies into the model environment."
         )
+
     if has_env and install_mlflow:
+        mlflow_package = os.environ.get("DEFAULT_MLFLOW_PACKAGE", "mlflow")
         install_mlflow_cmd = [
             "pip install /opt/mlflow/."
             if _container_includes_mlflow_source()

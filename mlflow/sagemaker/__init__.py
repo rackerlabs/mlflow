@@ -576,7 +576,11 @@ def _upload_s3(local_model_path, bucket, prefix, region_name, s3_client):
         with open(model_data_file, 'rb') as fobj:
             key = os.path.join(prefix, 'model.tar.gz')
             obj = sess.resource('s3').Bucket(bucket).Object(key)
-            obj.upload_fileobj(fobj)
+            s3_encrypt = os.environ.get('MLFLOW_S3_ENABLE_ENCRYPTION', 'false').lower() in ['true', '1']
+            extra_args = {}
+            if s3_encrypt:
+                extra_args = {'ServerSideEncryption': 'AES256'}
+            obj.upload_fileobj(fobj, ExtraArgs=extra_args)
             response = s3_client.put_object_tagging(
                 Bucket=bucket,
                 Key=key,

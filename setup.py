@@ -27,7 +27,7 @@ alembic_files = [
 ]
 
 setup(
-    name="mlflow",
+    name='mlflow-sagemaker',
     version=version,
     packages=find_packages(exclude=["tests", "tests.*"]),
     package_data={"mlflow": js_files + models_container_server_files + alembic_files},
@@ -74,10 +74,10 @@ setup(
         mlflow=mlflow.cli:cli
     """,
     zip_safe=False,
-    author="Databricks",
-    description="MLflow: An ML Workflow Tool",
-    long_description=open("README.rst").read(),
-    license="Apache License 2.0",
+    author='Databricks/Onica',
+    description='MLflow: An ML Workflow Tool (Forked for Sagemaker)',
+    long_description=open('README.rst').read(),
+    license='Apache License 2.0',
     classifiers=[
         "Intended Audience :: Developers",
         "Programming Language :: Python :: 2.7",
