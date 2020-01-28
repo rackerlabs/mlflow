@@ -11,7 +11,6 @@ RUN apt-get update && \
     cmake protobuf-compiler &&  \
 # install required python packages
     pip install -r dev-requirements.txt && \
-    pip install -r test-requirements.txt && \
 # install mlflow in editable form
     pip install -e . && \
 # mkdir required to support install openjdk-11-jre-headless
