@@ -16,7 +16,7 @@ _logger = logging.getLogger(__name__)
 
 MLFLOW_SQLALCHEMYSTORE_POOL_SIZE = "MLFLOW_SQLALCHEMYSTORE_POOL_SIZE"
 MLFLOW_SQLALCHEMYSTORE_MAX_OVERFLOW = "MLFLOW_SQLALCHEMYSTORE_MAX_OVERFLOW"
-
+MLFLOW_BACKEND_CA_CERTIFICATE = "MLFLOW_BACKEND_CA_CERTIFICATE"
 
 def _get_package_dir():
     """Returns directory containing MLflow python package."""
@@ -167,6 +167,7 @@ def _upgrade_db_initialized_before_mlflow_1(url):
 def create_sqlalchemy_engine(db_uri):
     pool_size = os.environ.get(MLFLOW_SQLALCHEMYSTORE_POOL_SIZE)
     pool_max_overflow = os.environ.get(MLFLOW_SQLALCHEMYSTORE_MAX_OVERFLOW)
+    pool_ca_cert = os.environ.get(MLFLOW_BACKEND_CA_CERTIFICATE)
     pool_kwargs = {}
     # Send argument only if they have been injected.
     # Some engine does not support them (for example sqllite)
@@ -174,6 +175,8 @@ def create_sqlalchemy_engine(db_uri):
         pool_kwargs['pool_size'] = int(pool_size)
     if pool_max_overflow:
         pool_kwargs['max_overflow'] = int(pool_max_overflow)
+    if pool_ca_cert:
+        pool_kwargs['pool_ca'] = pool_ca_cert
     if pool_kwargs:
         _logger.info("Create SQLAlchemy engine with pool options %s", pool_kwargs)
     return sqlalchemy.create_engine(db_uri, pool_pre_ping=True,
