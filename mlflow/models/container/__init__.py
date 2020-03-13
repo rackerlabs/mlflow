@@ -30,10 +30,7 @@ DEPLOYMENT_CONFIG_KEY_FLAVOR_NAME = "MLFLOW_DEPLOYMENT_FLAVOR_NAME"
 
 DEFAULT_SAGEMAKER_SERVER_PORT = 8080
 
-SUPPORTED_FLAVORS = [
-    pyfunc.FLAVOR_NAME,
-    mleap.FLAVOR_NAME
-]
+SUPPORTED_FLAVORS = [pyfunc.FLAVOR_NAME, mleap.FLAVOR_NAME]
 
 DISABLE_NGINX = "DISABLE_NGINX"
 
@@ -44,13 +41,16 @@ def _init(cmd):
 
     :param cmd: Command param passed by Sagemaker. Can be  "serve" or "train" (unimplemented).
     """
-    if cmd == 'serve':
+    if cmd == "serve":
         _serve()
-    elif cmd == 'train':
+    elif cmd == "train":
         _train()
     else:
-        raise Exception("Unrecognized command {cmd}, full args = {args}".format(cmd=cmd,
-                                                                                args=str(sys.argv)))
+        raise Exception(
+            "Unrecognized command {cmd}, full args = {args}".format(
+                cmd=cmd, args=str(sys.argv)
+            )
+        )
 
 
 def _serve():
@@ -73,7 +73,9 @@ def _serve():
     elif pyfunc.FLAVOR_NAME in m.flavors:
         _serve_pyfunc(m)
     else:
-        raise Exception("This container only supports models with the MLeap or PyFunc flavors.")
+        raise Exception(
+            "This container only supports models with the MLeap or PyFunc flavors."
+        )
 
 
 def _install_pyfunc_deps(model_path=None, install_mlflow=False):
@@ -99,7 +101,9 @@ def _install_pyfunc_deps(model_path=None, install_mlflow=False):
             if not os.path.exists(env_path_dst_dir):
                 os.makedirs(env_path_dst_dir)
             shutil.copyfile(os.path.join(MODEL_PATH, env), env_path_dst)
-            conda_create_model_env = "conda env create -n custom_env -f {}".format(env_path_dst)
+            conda_create_model_env = "conda env create -n custom_env -f {}".format(
+                env_path_dst
+            )
             if Popen(["bash", "-c", conda_create_model_env]).wait() != 0:
                 raise Exception("Failed to create model environment.")
             has_env = True
@@ -107,14 +111,23 @@ def _install_pyfunc_deps(model_path=None, install_mlflow=False):
     # NB: install gunicorn[gevent] from pip rather than from conda because gunicorn is already
     # dependency of mlflow on pip and we expect mlflow to be part of the environment.
     install_server_deps = ["pip install gunicorn[gevent]"]
-    if Popen(["bash", "-c", " && ".join(activate_cmd + install_server_deps)]).wait() != 0:
-        raise Exception("Failed to install serving dependencies into the model environment.")
+    if (
+        Popen(["bash", "-c", " && ".join(activate_cmd + install_server_deps)]).wait()
+        != 0
+    ):
+        raise Exception(
+            "Failed to install serving dependencies into the model environment."
+        )
     if has_env and install_mlflow:
         install_mlflow_cmd = [
-            "pip install /opt/mlflow/." if _container_includes_mlflow_source()
+            "pip install /opt/mlflow/."
+            if _container_includes_mlflow_source()
             else "pip install mlflow=={}".format(MLFLOW_VERSION)
         ]
-        if Popen(["bash", "-c", " && ".join(activate_cmd + install_mlflow_cmd)]).wait() != 0:
+        if (
+            Popen(["bash", "-c", " && ".join(activate_cmd + install_mlflow_cmd)]).wait()
+            != 0
+        ):
             raise Exception("Failed to install mlflow into the model environment.")
 
 
@@ -125,39 +138,51 @@ def _serve_pyfunc(model):
         if not os.environ.get(DISABLE_ENV_CREATION) == "true":
             _install_pyfunc_deps(MODEL_PATH, install_mlflow=True)
         bash_cmds += ["source /miniconda/bin/activate custom_env"]
-    nginx_conf = resource_filename(mlflow.models.__name__, "container/scoring_server/nginx.conf")
+    nginx_conf = resource_filename(
+        mlflow.models.__name__, "container/scoring_server/nginx.conf"
+    )
 
     # option to disable manually nginx. The default behavior is to enable nginx.
-    start_nginx = False if os.getenv(DISABLE_NGINX, 'false').lower() == 'true' else True
-    nginx = Popen(['nginx', '-c', nginx_conf]) if start_nginx else None
+    start_nginx = False if os.getenv(DISABLE_NGINX, "false").lower() == "true" else True
+    nginx = Popen(["nginx", "-c", nginx_conf]) if start_nginx else None
 
     # link the log streams to stdout/err so they will be logged to the container logs.
     # Default behavior is to do the redirection unless explicitly specified by environment variable.
 
     if start_nginx:
-        check_call(['ln', '-sf', '/dev/stdout', '/var/log/nginx/access.log'])
-        check_call(['ln', '-sf', '/dev/stderr', '/var/log/nginx/error.log'])
+        check_call(["ln", "-sf", "/dev/stdout", "/var/log/nginx/access.log"])
+        check_call(["ln", "-sf", "/dev/stderr", "/var/log/nginx/error.log"])
 
     cpu_count = multiprocessing.cpu_count()
     os.system("pip -V")
     os.system("python -V")
     os.system('python -c"from mlflow.version import VERSION as V; print(V)"')
-    cmd = "gunicorn -w {cpu_count} ".format(cpu_count=cpu_count) + \
-          "${GUNICORN_CMD_ARGS} mlflow.models.container.scoring_server.wsgi:app"
+    cmd = (
+        "gunicorn -w {cpu_count} ".format(cpu_count=cpu_count)
+        + "${GUNICORN_CMD_ARGS} mlflow.models.container.scoring_server.wsgi:app"
+    )
     bash_cmds.append(cmd)
     gunicorn = Popen(["/bin/bash", "-c", " && ".join(bash_cmds)])
 
     procs = [p for p in [nginx, gunicorn] if p]
 
-    signal.signal(signal.SIGTERM, lambda a, b: _sigterm_handler(pids=[p.pid for p in procs]))
+    signal.signal(
+        signal.SIGTERM, lambda a, b: _sigterm_handler(pids=[p.pid for p in procs])
+    )
     # If either subprocess exits, so do we.
     awaited_pids = _await_subprocess_exit_any(procs=procs)
     _sigterm_handler(awaited_pids)
 
 
 def _serve_mleap():
-    serve_cmd = ["java", "-cp", "\"/opt/java/jars/*\"", "org.mlflow.sagemaker.ScoringServer",
-                 MODEL_PATH, str(DEFAULT_SAGEMAKER_SERVER_PORT)]
+    serve_cmd = [
+        "java",
+        "-cp",
+        '"/opt/java/jars/*"',
+        "org.mlflow.sagemaker.ScoringServer",
+        MODEL_PATH,
+        str(DEFAULT_SAGEMAKER_SERVER_PORT),
+    ]
     # Invoke `Popen` with a single string command in the shell to support wildcard usage
     # with the mlflow jar version.
     serve_cmd = " ".join(serve_cmd)
@@ -172,6 +197,12 @@ def _container_includes_mlflow_source():
 
 
 def _train():
+    for root, dirs, files in os.walk("/opt/ml/"):
+        path = root.split(os.sep)
+        print((len(path) - 1) * "---", os.path.basename(root))
+        for file in files:
+            print(len(path) * "---", file)
+    # print(os.listdir("/opt/ml/")
     raise Exception("Train is not implemented.")
 
 

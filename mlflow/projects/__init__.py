@@ -26,8 +26,14 @@ from mlflow.exceptions import ExecutionException, MlflowException
 from mlflow.projects import _project_spec
 from mlflow.projects.submitted_run import LocalSubmittedRun, SubmittedRun
 from mlflow.projects.utils import (
-    _is_file_uri, _is_local_uri, _is_valid_branch_name, _is_zip_uri,
-    _get_git_repo_url, _parse_subdirectory, _expand_uri, _get_storage_dir,
+    _is_file_uri,
+    _is_local_uri,
+    _is_valid_branch_name,
+    _is_zip_uri,
+    _get_git_repo_url,
+    _parse_subdirectory,
+    _expand_uri,
+    _get_storage_dir,
     _GIT_URI_REGEX,
 )
 from mlflow.tracking.context.default_context import _get_user
@@ -42,10 +48,20 @@ from mlflow.store.artifact.s3_artifact_repo import S3ArtifactRepository
 from mlflow.utils import databricks_utils, file_utils, process
 from mlflow.utils.file_utils import path_to_local_sqlite_uri, path_to_local_file_uri
 from mlflow.utils.mlflow_tags import (
-    MLFLOW_PROJECT_ENV, MLFLOW_DOCKER_IMAGE_URI, MLFLOW_DOCKER_IMAGE_ID, MLFLOW_USER,
-    MLFLOW_SOURCE_NAME, MLFLOW_SOURCE_TYPE, MLFLOW_GIT_COMMIT, MLFLOW_GIT_REPO_URL,
-    MLFLOW_GIT_BRANCH, LEGACY_MLFLOW_GIT_REPO_URL, LEGACY_MLFLOW_GIT_BRANCH_NAME,
-    MLFLOW_PROJECT_ENTRY_POINT, MLFLOW_PARENT_RUN_ID, MLFLOW_PROJECT_BACKEND,
+    MLFLOW_PROJECT_ENV,
+    MLFLOW_DOCKER_IMAGE_URI,
+    MLFLOW_DOCKER_IMAGE_ID,
+    MLFLOW_USER,
+    MLFLOW_SOURCE_NAME,
+    MLFLOW_SOURCE_TYPE,
+    MLFLOW_GIT_COMMIT,
+    MLFLOW_GIT_REPO_URL,
+    MLFLOW_GIT_BRANCH,
+    LEGACY_MLFLOW_GIT_REPO_URL,
+    LEGACY_MLFLOW_GIT_BRANCH_NAME,
+    MLFLOW_PROJECT_ENTRY_POINT,
+    MLFLOW_PARENT_RUN_ID,
+    MLFLOW_PROJECT_BACKEND,
 )
 from mlflow.utils.uri import get_db_profile_from_uri, is_databricks_uri
 
@@ -75,7 +91,9 @@ def _resolve_experiment_id(experiment_name=None, experiment_id=None):
     """
 
     if experiment_name and experiment_id:
-        raise MlflowException("Specify only one of 'experiment_name' or 'experiment_id'.")
+        raise MlflowException(
+            "Specify only one of 'experiment_name' or 'experiment_id'."
+        )
 
     if experiment_id:
         return str(experiment_id)
@@ -86,15 +104,29 @@ def _resolve_experiment_id(experiment_name=None, experiment_id=None):
         if exp:
             return exp.experiment_id
         else:
-            print("INFO: '{}' does not exist. Creating a new experiment".format(experiment_name))
+            print(
+                "INFO: '{}' does not exist. Creating a new experiment".format(
+                    experiment_name
+                )
+            )
             return client.create_experiment(experiment_name)
 
     return _get_experiment_id()
 
 
-def _run(uri, experiment_id, entry_point="main", version=None, parameters=None,
-         backend=None, backend_config=None, use_conda=True,
-         storage_dir=None, synchronous=True, run_id=None):
+def _run(
+    uri,
+    experiment_id,
+    entry_point="main",
+    version=None,
+    parameters=None,
+    backend=None,
+    backend_config=None,
+    use_conda=True,
+    storage_dir=None,
+    synchronous=True,
+    run_id=None,
+):
     """
     Helper that delegates to the project-running method corresponding to the passed-in backend.
     Returns a ``SubmittedRun`` corresponding to the project run.
@@ -113,8 +145,10 @@ def _run(uri, experiment_id, entry_point="main", version=None, parameters=None,
     # Consolidate parameters for logging.
     # `storage_dir` is `None` since we want to log actual path not downloaded local path
     entry_point_obj = project.get_entry_point(entry_point)
-    final_params, extra_params = entry_point_obj.compute_parameters(parameters, storage_dir=None)
-    for key, value in (list(final_params.items()) + list(extra_params.items())):
+    final_params, extra_params = entry_point_obj.compute_parameters(
+        parameters, storage_dir=None
+    )
+    for key, value in list(final_params.items()) + list(extra_params.items()):
         tracking.MlflowClient().log_param(active_run.info.run_id, key, value)
 
     repo_url = _get_git_repo_url(work_dir)
@@ -128,36 +162,53 @@ def _run(uri, experiment_id, entry_point="main", version=None, parameters=None,
             tracking.MlflowClient().set_tag(active_run.info.run_id, tag, version)
 
     if backend == "databricks":
-        tracking.MlflowClient().set_tag(active_run.info.run_id, MLFLOW_PROJECT_BACKEND,
-                                        "databricks")
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "databricks"
+        )
         from mlflow.projects.databricks import run_databricks
+
         return run_databricks(
             remote_run=active_run,
-            uri=uri, entry_point=entry_point, work_dir=work_dir, parameters=parameters,
-            experiment_id=experiment_id, cluster_spec=backend_config)
+            uri=uri,
+            entry_point=entry_point,
+            work_dir=work_dir,
+            parameters=parameters,
+            experiment_id=experiment_id,
+            cluster_spec=backend_config,
+        )
 
     elif backend == "local" or backend is None:
-        tracking.MlflowClient().set_tag(active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "local")
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "local"
+        )
         command_args = []
         command_separator = " "
         # If a docker_env attribute is defined in MLproject then it takes precedence over conda yaml
         # environments, so the project will be executed inside a docker container.
         if project.docker_env:
-            tracking.MlflowClient().set_tag(active_run.info.run_id, MLFLOW_PROJECT_ENV,
-                                            "docker")
+            tracking.MlflowClient().set_tag(
+                active_run.info.run_id, MLFLOW_PROJECT_ENV, "docker"
+            )
             _validate_docker_env(project)
             _validate_docker_installation()
-            image = _build_docker_image(work_dir=work_dir,
-                                        repository_uri=project.name,
-                                        base_image=project.docker_env.get('image'),
-                                        run_id=active_run.info.run_id)
-            command_args += _get_docker_command(image=image, active_run=active_run,
-                                                volumes=project.docker_env.get("volumes"),
-                                                user_env_vars=project.docker_env.get("environment"))
+            image = _build_docker_image(
+                work_dir=work_dir,
+                repository_uri=project.name,
+                base_image=project.docker_env.get("image"),
+                run_id=active_run.info.run_id,
+            )
+            command_args += _get_docker_command(
+                image=image,
+                active_run=active_run,
+                volumes=project.docker_env.get("volumes"),
+                user_env_vars=project.docker_env.get("environment"),
+            )
         # Synchronously create a conda environment (even though this may take some time)
         # to avoid failures due to multiple concurrent attempts to create the same conda env.
         elif use_conda:
-            tracking.MlflowClient().set_tag(active_run.info.run_id, MLFLOW_PROJECT_ENV, "conda")
+            tracking.MlflowClient().set_tag(
+                active_run.info.run_id, MLFLOW_PROJECT_ENV, "conda"
+            )
             command_separator = " && "
             conda_env_name = _get_or_create_conda_env(project.conda_env_path)
             command_args += _get_conda_command(conda_env_name)
@@ -165,27 +216,41 @@ def _run(uri, experiment_id, entry_point="main", version=None, parameters=None,
         # updates to the tracking server when finished. Note that the run state may not be
         # persisted to the tracking server if interrupted
         if synchronous:
-            command_args += _get_entry_point_command(project, entry_point, parameters, storage_dir)
+            command_args += _get_entry_point_command(
+                project, entry_point, parameters, storage_dir
+            )
             command_str = command_separator.join(command_args)
-            return _run_entry_point(command_str, work_dir, experiment_id,
-                                    run_id=active_run.info.run_id)
+            return _run_entry_point(
+                command_str, work_dir, experiment_id, run_id=active_run.info.run_id
+            )
         # Otherwise, invoke `mlflow run` in a subprocess
         return _invoke_mlflow_run_subprocess(
-            work_dir=work_dir, entry_point=entry_point, parameters=parameters,
+            work_dir=work_dir,
+            entry_point=entry_point,
+            parameters=parameters,
             experiment_id=experiment_id,
-            use_conda=use_conda, storage_dir=storage_dir, run_id=active_run.info.run_id)
+            use_conda=use_conda,
+            storage_dir=storage_dir,
+            run_id=active_run.info.run_id,
+        )
     elif backend == "kubernetes":
         from mlflow.projects import kubernetes as kb
-        tracking.MlflowClient().set_tag(active_run.info.run_id, MLFLOW_PROJECT_ENV, "docker")
-        tracking.MlflowClient().set_tag(active_run.info.run_id, MLFLOW_PROJECT_BACKEND,
-                                        "kubernetes")
+
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_ENV, "docker"
+        )
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "kubernetes"
+        )
         _validate_docker_env(project)
         _validate_docker_installation()
         kube_config = _parse_kubernetes_config(backend_config)
-        image = _build_docker_image(work_dir=work_dir,
-                                    repository_uri=kube_config["repository-uri"],
-                                    base_image=project.docker_env.get('image'),
-                                    run_id=active_run.info.run_id)
+        image = _build_docker_image(
+            work_dir=work_dir,
+            repository_uri=kube_config["repository-uri"],
+            base_image=project.docker_env.get("image"),
+            run_id=active_run.info.run_id,
+        )
         image_digest = kb.push_image_to_registry(image.tags[0])
         submitted_run = kb.run_kubernetes_job(
             project.name,
@@ -195,22 +260,57 @@ def _run(uri, experiment_id, entry_point="main", version=None, parameters=None,
             _get_entry_point_command(project, entry_point, parameters, storage_dir),
             _get_run_env_vars(
                 run_id=active_run.info.run_uuid,
-                experiment_id=active_run.info.experiment_id
+                experiment_id=active_run.info.experiment_id,
             ),
-            kube_config.get('kube-context', None),
-            kube_config['kube-job-template']
+            kube_config.get("kube-context", None),
+            kube_config["kube-job-template"],
+        )
+        return submitted_run
+    elif backend == "sagemaker":
+        from mlflow.projects import sagemaker as sm
+
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_ENV, "conda"
+        )
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "sagemaker"
+        )
+
+        sagemaker_config = _parse_sagemaker_config(backend_config)
+
+        print(project)
+        print(work_dir)
+
+        submitted_run = sm.run_sagemaker_training_job(
+            uri,
+            work_dir,
+            experiment_id=active_run.info.experiment_id,
+            run_id=active_run.info.run_uuid,
+            sagemaker_config=sagemaker_config,
         )
         return submitted_run
 
-    supported_backends = ["local", "databricks", "kubernetes"]
-    raise ExecutionException("Got unsupported execution mode %s. Supported "
-                             "values: %s" % (backend, supported_backends))
+    supported_backends = ["local", "databricks", "kubernetes", "sagemaker"]
+    raise ExecutionException(
+        "Got unsupported execution mode %s. Supported "
+        "values: %s" % (backend, supported_backends)
+    )
 
 
-def run(uri, entry_point="main", version=None, parameters=None,
-        experiment_name=None, experiment_id=None,
-        backend=None, backend_config=None, use_conda=True,
-        storage_dir=None, synchronous=True, run_id=None):
+def run(
+    uri,
+    entry_point="main",
+    version=None,
+    parameters=None,
+    experiment_name=None,
+    experiment_id=None,
+    backend=None,
+    backend_config=None,
+    use_conda=True,
+    storage_dir=None,
+    synchronous=True,
+    run_id=None,
+):
     """
     Run an MLflow project. The project can be local or stored at a Git URI.
 
@@ -263,27 +363,43 @@ def run(uri, entry_point="main", version=None, parameters=None,
     """
 
     cluster_spec_dict = backend_config
-    if (backend_config and type(backend_config) != dict
-            and os.path.splitext(backend_config)[-1] == ".json"):
-        with open(backend_config, 'r') as handle:
+    if (
+        backend_config
+        and type(backend_config) != dict
+        and os.path.splitext(backend_config)[-1] == ".json"
+    ):
+        with open(backend_config, "r") as handle:
             try:
                 cluster_spec_dict = json.load(handle)
             except ValueError:
                 _logger.error(
                     "Error when attempting to load and parse JSON cluster spec from file %s",
-                    backend_config)
+                    backend_config,
+                )
                 raise
 
     if backend == "databricks":
-        mlflow.projects.databricks.before_run_validations(mlflow.get_tracking_uri(), backend_config)
+        mlflow.projects.databricks.before_run_validations(
+            mlflow.get_tracking_uri(), backend_config
+        )
 
-    experiment_id = _resolve_experiment_id(experiment_name=experiment_name,
-                                           experiment_id=experiment_id)
+    experiment_id = _resolve_experiment_id(
+        experiment_name=experiment_name, experiment_id=experiment_id
+    )
 
     submitted_run_obj = _run(
-        uri=uri, experiment_id=experiment_id, entry_point=entry_point, version=version,
-        parameters=parameters, backend=backend, backend_config=cluster_spec_dict,
-        use_conda=use_conda, storage_dir=storage_dir, synchronous=synchronous, run_id=run_id)
+        uri=uri,
+        experiment_id=experiment_id,
+        entry_point=entry_point,
+        version=version,
+        parameters=parameters,
+        backend=backend,
+        backend_config=cluster_spec_dict,
+        use_conda=use_conda,
+        storage_dir=storage_dir,
+        synchronous=synchronous,
+        run_id=run_id,
+    )
     if synchronous:
         _wait_for(submitted_run_obj)
     return submitted_run_obj
@@ -296,7 +412,9 @@ def _wait_for(submitted_run_obj):
     # Note: there's a small chance we fail to report the run's status to the tracking server if
     # we're interrupted before we reach the try block below
     try:
-        active_run = tracking.MlflowClient().get_run(run_id) if run_id is not None else None
+        active_run = (
+            tracking.MlflowClient().get_run(run_id) if run_id is not None else None
+        )
         if submitted_run_obj.wait():
             _logger.info("=== Run (ID '%s') succeeded ===", run_id)
             _maybe_set_run_terminated(active_run, "FINISHED")
@@ -319,7 +437,9 @@ def _fetch_project(uri, force_tempdir, version=None):
                           projects).
     """
     parsed_uri, subdirectory = _parse_subdirectory(uri)
-    use_temp_dst_dir = force_tempdir or _is_zip_uri(parsed_uri) or not _is_local_uri(parsed_uri)
+    use_temp_dst_dir = (
+        force_tempdir or _is_zip_uri(parsed_uri) or not _is_local_uri(parsed_uri)
+    )
     dst_dir = tempfile.mkdtemp() if use_temp_dst_dir else parsed_uri
     if use_temp_dst_dir:
         _logger.info("=== Fetching project from %s into %s ===", uri, dst_dir)
@@ -327,25 +447,35 @@ def _fetch_project(uri, force_tempdir, version=None):
         if _is_file_uri(parsed_uri):
             parsed_file_uri = urllib.parse.urlparse(urllib.parse.unquote(parsed_uri))
             parsed_uri = os.path.join(parsed_file_uri.netloc, parsed_file_uri.path)
-        _unzip_repo(zip_file=(
-            parsed_uri if _is_local_uri(parsed_uri) else _fetch_zip_repo(parsed_uri)),
-            dst_dir=dst_dir)
+        _unzip_repo(
+            zip_file=(
+                parsed_uri if _is_local_uri(parsed_uri) else _fetch_zip_repo(parsed_uri)
+            ),
+            dst_dir=dst_dir,
+        )
     elif _is_local_uri(uri):
         if version is not None:
-            raise ExecutionException("Setting a version is only supported for Git project URIs")
+            raise ExecutionException(
+                "Setting a version is only supported for Git project URIs"
+            )
         if use_temp_dst_dir:
             dir_util.copy_tree(src=parsed_uri, dst=dst_dir)
     else:
-        assert _GIT_URI_REGEX.match(parsed_uri), "Non-local URI %s should be a Git URI" % parsed_uri
+        assert _GIT_URI_REGEX.match(parsed_uri), (
+            "Non-local URI %s should be a Git URI" % parsed_uri
+        )
         _fetch_git_repo(parsed_uri, version, dst_dir)
     res = os.path.abspath(os.path.join(dst_dir, subdirectory))
     if not os.path.exists(res):
-        raise ExecutionException("Could not find subdirectory %s of %s" % (subdirectory, dst_dir))
+        raise ExecutionException(
+            "Could not find subdirectory %s of %s" % (subdirectory, dst_dir)
+        )
     return res
 
 
 def _unzip_repo(zip_file, dst_dir):
     import zipfile
+
     with zipfile.ZipFile(zip_file) as zip_in:
         zip_in.extractall(dst_dir)
 
@@ -353,6 +483,7 @@ def _unzip_repo(zip_file, dst_dir):
 def _fetch_zip_repo(uri):
     import requests
     from io import BytesIO
+
     # TODO (dbczumar): Replace HTTP resolution via ``requests.get`` with an invocation of
     # ```mlflow.data.download_uri()`` when the API supports the same set of available stores as
     # the artifact repository (Azure, FTP, etc). See the following issue:
@@ -375,6 +506,7 @@ def _fetch_git_repo(uri, version, dst_dir):
     # We defer importing git until the last moment, because the import requires that the git
     # executable is availble on the PATH, so we only want to fail if we actually need it.
     import git
+
     repo = git.Repo.init(dst_dir)
     origin = repo.create_remote("origin", uri)
     origin.fetch()
@@ -382,9 +514,11 @@ def _fetch_git_repo(uri, version, dst_dir):
         try:
             repo.git.checkout(version)
         except git.exc.GitCommandError as e:
-            raise ExecutionException("Unable to checkout version '%s' of git repo %s"
-                                     "- please ensure that the version exists in the repo. "
-                                     "Error: %s" % (version, uri, e))
+            raise ExecutionException(
+                "Unable to checkout version '%s' of git repo %s"
+                "- please ensure that the version exists in the repo. "
+                "Error: %s" % (version, uri, e)
+            )
     else:
         repo.create_head("master", origin.refs.master)
         repo.heads.master.checkout()
@@ -433,25 +567,38 @@ def _get_or_create_conda_env(conda_env_path, env_id=None):
     try:
         process.exec_cmd([conda_path, "--help"], throw_on_error=False)
     except EnvironmentError:
-        raise ExecutionException("Could not find Conda executable at {0}. "
-                                 "Ensure Conda is installed as per the instructions at "
-                                 "https://conda.io/projects/conda/en/latest/"
-                                 "user-guide/install/index.html. "
-                                 "You can also configure MLflow to look for a specific "
-                                 "Conda executable by setting the {1} environment variable "
-                                 "to the path of the Conda executable"
-                                 .format(conda_path, MLFLOW_CONDA_HOME))
+        raise ExecutionException(
+            "Could not find Conda executable at {0}. "
+            "Ensure Conda is installed as per the instructions at "
+            "https://conda.io/projects/conda/en/latest/"
+            "user-guide/install/index.html. "
+            "You can also configure MLflow to look for a specific "
+            "Conda executable by setting the {1} environment variable "
+            "to the path of the Conda executable".format(conda_path, MLFLOW_CONDA_HOME)
+        )
     (_, stdout, _) = process.exec_cmd([conda_path, "env", "list", "--json"])
-    env_names = [os.path.basename(env) for env in json.loads(stdout)['envs']]
+    env_names = [os.path.basename(env) for env in json.loads(stdout)["envs"]]
     project_env_name = _get_conda_env_name(conda_env_path, env_id)
     if project_env_name not in env_names:
-        _logger.info('=== Creating conda environment %s ===', project_env_name)
+        _logger.info("=== Creating conda environment %s ===", project_env_name)
         if conda_env_path:
-            process.exec_cmd([conda_path, "env", "create", "-n", project_env_name, "--file",
-                              conda_env_path], stream_output=True)
+            process.exec_cmd(
+                [
+                    conda_path,
+                    "env",
+                    "create",
+                    "-n",
+                    project_env_name,
+                    "--file",
+                    conda_env_path,
+                ],
+                stream_output=True,
+            )
         else:
             process.exec_cmd(
-                [conda_path, "create", "-n", project_env_name, "python"], stream_output=True)
+                [conda_path, "create", "-n", project_env_name, "python"],
+                stream_output=True,
+            )
     return project_env_name
 
 
@@ -482,10 +629,14 @@ def _get_entry_point_command(project, entry_point, parameters, storage_dir):
     _logger.info(
         "=== Created directory %s for downloading remote URIs passed to arguments of"
         " type 'path' ===",
-        storage_dir_for_run)
+        storage_dir_for_run,
+    )
     commands = []
     commands.append(
-        project.get_entry_point(entry_point).compute_command(parameters, storage_dir_for_run))
+        project.get_entry_point(entry_point).compute_command(
+            parameters, storage_dir_for_run
+        )
+    )
     return commands
 
 
@@ -503,14 +654,15 @@ def _run_entry_point(command, work_dir, experiment_id, run_id):
     # in case os name is not 'nt', we are not running on windows. It introduces
     # bash command otherwise.
     if os.name != "nt":
-        process = subprocess.Popen(["bash", "-c", command], close_fds=True, cwd=work_dir, env=env)
+        process = subprocess.Popen(
+            ["bash", "-c", command], close_fds=True, cwd=work_dir, env=env
+        )
     else:
         process = subprocess.Popen(command, close_fds=True, cwd=work_dir, env=env)
     return LocalSubmittedRun(run_id, process)
 
 
-def _build_mlflow_run_cmd(
-        uri, entry_point, storage_dir, use_conda, run_id, parameters):
+def _build_mlflow_run_cmd(uri, entry_point, storage_dir, use_conda, run_id, parameters):
     """
     Build and return an array containing an ``mlflow run`` command that can be invoked to locally
     run the project at the specified URI.
@@ -536,11 +688,15 @@ def _run_mlflow_run_cmd(mlflow_run_arr, env_map):
     # best-effort cleanup of all its descendant processes if needed
     if sys.platform == "win32":
         return subprocess.Popen(
-            mlflow_run_arr, env=final_env, universal_newlines=True,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            mlflow_run_arr,
+            env=final_env,
+            universal_newlines=True,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
     else:
         return subprocess.Popen(
-            mlflow_run_arr, env=final_env, universal_newlines=True, preexec_fn=os.setsid)
+            mlflow_run_arr, env=final_env, universal_newlines=True, preexec_fn=os.setsid
+        )
 
 
 def _create_run(uri, experiment_id, work_dir, entry_point):
@@ -550,7 +706,9 @@ def _create_run(uri, experiment_id, work_dir, entry_point):
     used to report additional data about the run (metrics/params) to the tracking server.
     """
     if _is_local_uri(uri):
-        source_name = tracking._tracking_service.utils._get_git_url_if_present(_expand_uri(uri))
+        source_name = tracking._tracking_service.utils._get_git_url_if_present(
+            _expand_uri(uri)
+        )
     else:
         source_name = _expand_uri(uri)
     source_version = _get_git_commit(work_dir)
@@ -564,14 +722,16 @@ def _create_run(uri, experiment_id, work_dir, entry_point):
         MLFLOW_USER: _get_user(),
         MLFLOW_SOURCE_NAME: source_name,
         MLFLOW_SOURCE_TYPE: SourceType.to_string(SourceType.PROJECT),
-        MLFLOW_PROJECT_ENTRY_POINT: entry_point
+        MLFLOW_PROJECT_ENTRY_POINT: entry_point,
     }
     if source_version is not None:
         tags[MLFLOW_GIT_COMMIT] = source_version
     if parent_run_id is not None:
         tags[MLFLOW_PARENT_RUN_ID] = parent_run_id
 
-    active_run = tracking.MlflowClient().create_run(experiment_id=experiment_id, tags=tags)
+    active_run = tracking.MlflowClient().create_run(
+        experiment_id=experiment_id, tags=tags
+    )
     return active_run
 
 
@@ -588,26 +748,35 @@ def _get_run_env_vars(run_id, experiment_id):
 
 
 def _invoke_mlflow_run_subprocess(
-        work_dir, entry_point, parameters, experiment_id, use_conda, storage_dir, run_id):
+    work_dir, entry_point, parameters, experiment_id, use_conda, storage_dir, run_id
+):
     """
     Run an MLflow project asynchronously by invoking ``mlflow run`` in a subprocess, returning
     a SubmittedRun that can be used to query run status.
     """
     _logger.info("=== Asynchronously launching MLflow run with ID %s ===", run_id)
     mlflow_run_arr = _build_mlflow_run_cmd(
-        uri=work_dir, entry_point=entry_point, storage_dir=storage_dir, use_conda=use_conda,
-        run_id=run_id, parameters=parameters)
+        uri=work_dir,
+        entry_point=entry_point,
+        storage_dir=storage_dir,
+        use_conda=use_conda,
+        run_id=run_id,
+        parameters=parameters,
+    )
     mlflow_run_subprocess = _run_mlflow_run_cmd(
-        mlflow_run_arr, _get_run_env_vars(run_id, experiment_id))
+        mlflow_run_arr, _get_run_env_vars(run_id, experiment_id)
+    )
     return LocalSubmittedRun(run_id, mlflow_run_subprocess)
 
 
 def _get_conda_command(conda_env_name):
     #  Checking for newer conda versions
-    if os.name != 'nt' and ('CONDA_EXE' in os.environ or 'MLFLOW_CONDA_HOME' in os.environ):
+    if os.name != "nt" and (
+        "CONDA_EXE" in os.environ or "MLFLOW_CONDA_HOME" in os.environ
+    ):
         conda_path = _get_conda_bin_executable("conda")
         activate_conda_env = [
-            'source {}/../etc/profile.d/conda.sh'.format(os.path.dirname(conda_path))
+            "source {}/../etc/profile.d/conda.sh".format(os.path.dirname(conda_path))
         ]
         activate_conda_env += ["conda activate {} 1>&2".format(conda_env_name)]
     else:
@@ -624,7 +793,8 @@ def _get_conda_command(conda_env_name):
 def _validate_execution_environment(project, backend):
     if project.docker_env and backend == "databricks":
         raise ExecutionException(
-            "Running docker-based projects on Databricks is not yet supported.")
+            "Running docker-based projects on Databricks is not yet supported."
+        )
 
 
 def _get_local_uri_or_none(uri):
@@ -645,12 +815,14 @@ def _get_local_uri_or_none(uri):
 def _get_docker_command(image, active_run, volumes=None, user_env_vars=None):
     docker_path = "docker"
     cmd = [docker_path, "run", "--rm"]
-    env_vars = _get_run_env_vars(run_id=active_run.info.run_id,
-                                 experiment_id=active_run.info.experiment_id)
+    env_vars = _get_run_env_vars(
+        run_id=active_run.info.run_id, experiment_id=active_run.info.experiment_id
+    )
     tracking_uri = tracking.get_tracking_uri()
     tracking_cmds, tracking_envs = _get_docker_tracking_cmd_and_envs(tracking_uri)
-    artifact_cmds, artifact_envs = \
-        _get_docker_artifact_storage_cmd_and_envs(active_run.info.artifact_uri)
+    artifact_cmds, artifact_envs = _get_docker_artifact_storage_cmd_and_envs(
+        active_run.info.artifact_uri
+    )
 
     cmd += tracking_cmds + artifact_cmds
     env_vars.update(tracking_envs)
@@ -668,7 +840,8 @@ def _get_docker_command(image, active_run, volumes=None, user_env_vars=None):
                         "This project expects the %s environment variables to "
                         "be set on the machine running the project, but %s was "
                         "not set. Please ensure all expected environment variables "
-                        "are set" % (", ".join(user_env_vars), user_entry))
+                        "are set" % (", ".join(user_env_vars), user_entry)
+                    )
                 env_vars[user_entry] = system_var
 
     if volumes is not None:
@@ -689,18 +862,24 @@ def _validate_docker_installation():
         docker_path = "docker"
         process.exec_cmd([docker_path, "--help"], throw_on_error=False)
     except EnvironmentError:
-        raise ExecutionException("Could not find Docker executable. "
-                                 "Ensure Docker is installed as per the instructions "
-                                 "at https://docs.docker.com/install/overview/.")
+        raise ExecutionException(
+            "Could not find Docker executable. "
+            "Ensure Docker is installed as per the instructions "
+            "at https://docs.docker.com/install/overview/."
+        )
 
 
 def _validate_docker_env(project):
     if not project.name:
-        raise ExecutionException("Project name in MLProject must be specified when using docker "
-                                 "for image tagging.")
-    if not project.docker_env.get('image'):
-        raise ExecutionException("Project with docker environment must specify the docker image "
-                                 "to use via an 'image' field under the 'docker_env' field.")
+        raise ExecutionException(
+            "Project name in MLProject must be specified when using docker "
+            "for image tagging."
+        )
+    if not project.docker_env.get("image"):
+        raise ExecutionException(
+            "Project with docker environment must specify the docker image "
+            "to use via an 'image' field under the 'docker_env' field."
+        )
 
 
 def _parse_kubernetes_config(backend_config):
@@ -710,24 +889,72 @@ def _parse_kubernetes_config(backend_config):
     if not backend_config:
         raise ExecutionException("Backend_config file not found.")
     kube_config = backend_config.copy()
-    if 'kube-job-template-path' not in backend_config.keys():
-        raise ExecutionException("'kube-job-template-path' attribute must be specified in "
-                                 "backend_config.")
-    kube_job_template = backend_config['kube-job-template-path']
+    if "kube-job-template-path" not in backend_config.keys():
+        raise ExecutionException(
+            "'kube-job-template-path' attribute must be specified in " "backend_config."
+        )
+    kube_job_template = backend_config["kube-job-template-path"]
     if os.path.exists(kube_job_template):
-        with open(kube_job_template, 'r') as job_template:
+        with open(kube_job_template, "r") as job_template:
             yaml_obj = yaml.safe_load(job_template.read())
         kube_job_template = yaml_obj
-        kube_config['kube-job-template'] = kube_job_template
+        kube_config["kube-job-template"] = kube_job_template
     else:
-        raise ExecutionException("Could not find 'kube-job-template-path': {}".format(
-            kube_job_template))
-    if 'kube-context' not in backend_config.keys():
-        _logger.debug("Could not find kube-context in backend_config."
-                      " Using current context or in-cluster config.")
-    if 'repository-uri' not in backend_config.keys():
+        raise ExecutionException(
+            "Could not find 'kube-job-template-path': {}".format(kube_job_template)
+        )
+    if "kube-context" not in backend_config.keys():
+        _logger.debug(
+            "Could not find kube-context in backend_config."
+            " Using current context or in-cluster config."
+        )
+    if "repository-uri" not in backend_config.keys():
         raise ExecutionException("Could not find 'repository-uri' in backend_config.")
     return kube_config
+
+
+def _parse_sagemaker_config(backend_config):
+    # Defaults for sagemaker training job submission.
+    default_sagemaker_config = {
+        "StoppingCondition": {
+            "MaxRuntimeInSeconds": 1800,
+            "MaxWaitTimeInSeconds": 1800,
+        },
+        "EnableNetworkIsolation": False,
+        "EnableInterContainerTrafficEncryption": True,
+        "EnableManagedSpotTraining": False,
+    }
+
+    if not backend_config:
+        raise ExecutionException("Backend_config file not found.")
+
+    # Merge with defaults, this will overwrite any defaults with submitted config.
+    sagemaker_config = {**default_sagemaker_config, **backend_config}
+
+    if "TrainingJobName" not in sagemaker_config.keys():
+        raise ExecutionException("Could not find TrainingJobName in backend_config.")
+
+    if "AlgorithmSpecification" not in sagemaker_config.keys():
+        raise ExecutionException(
+            "Could not find AlgorithmSpecification in backend_config."
+        )
+
+    if "RoleArn" not in sagemaker_config.keys():
+        raise ExecutionException("Could not find RoleArn in backend_config.")
+
+    if "InputDataConfig" not in sagemaker_config.keys():
+        raise ExecutionException("Could not find InputDataConfig in backend_config.")
+
+    if "OutputDataConfig" not in sagemaker_config.keys():
+        raise ExecutionException("Could not find OutputDataConfig in backend_config.")
+
+    if "ResourceConfig" not in sagemaker_config.keys():
+        raise ExecutionException("Could not find ResourceConfig in backend_config.")
+
+    if "VpcConfig" not in sagemaker_config.keys():
+        raise ExecutionException("Could not find VpcConfig in backend_config.")
+
+    return sagemaker_config
 
 
 def _create_docker_build_ctx(work_dir, dockerfile_contents):
@@ -743,7 +970,9 @@ def _create_docker_build_ctx(work_dir, dockerfile_contents):
         _, result_path = tempfile.mkstemp()
         file_utils.make_tarfile(
             output_filename=result_path,
-            source_dir=dst_path, archive_name=_PROJECT_TAR_ARCHIVE_NAME)
+            source_dir=dst_path,
+            archive_name=_PROJECT_TAR_ARCHIVE_NAME,
+        )
     finally:
         shutil.rmtree(directory)
     return result_path
@@ -758,27 +987,33 @@ def _build_docker_image(work_dir, repository_uri, base_image, run_id):
         "FROM {imagename}\n"
         "COPY {build_context_path}/ {workdir}\n"
         "WORKDIR {workdir}\n"
-    ).format(imagename=base_image,
-             build_context_path=_PROJECT_TAR_ARCHIVE_NAME,
-             workdir=_MLFLOW_DOCKER_WORKDIR_PATH)
+    ).format(
+        imagename=base_image,
+        build_context_path=_PROJECT_TAR_ARCHIVE_NAME,
+        workdir=_MLFLOW_DOCKER_WORKDIR_PATH,
+    )
     build_ctx_path = _create_docker_build_ctx(work_dir, dockerfile)
-    with open(build_ctx_path, 'rb') as docker_build_ctx:
+    with open(build_ctx_path, "rb") as docker_build_ctx:
         _logger.info("=== Building docker image %s ===", image_uri)
         client = docker.from_env()
         image, _ = client.images.build(
-            tag=image_uri, forcerm=True,
-            dockerfile=posixpath.join(_PROJECT_TAR_ARCHIVE_NAME, _GENERATED_DOCKERFILE_NAME),
-            fileobj=docker_build_ctx, custom_context=True, encoding="gzip")
+            tag=image_uri,
+            forcerm=True,
+            dockerfile=posixpath.join(
+                _PROJECT_TAR_ARCHIVE_NAME, _GENERATED_DOCKERFILE_NAME
+            ),
+            fileobj=docker_build_ctx,
+            custom_context=True,
+            encoding="gzip",
+        )
     try:
         os.remove(build_ctx_path)
     except Exception:  # pylint: disable=broad-except
-        _logger.info("Temporary docker context file %s was not deleted.", build_ctx_path)
-    tracking.MlflowClient().set_tag(run_id,
-                                    MLFLOW_DOCKER_IMAGE_URI,
-                                    image_uri)
-    tracking.MlflowClient().set_tag(run_id,
-                                    MLFLOW_DOCKER_IMAGE_ID,
-                                    image.id)
+        _logger.info(
+            "Temporary docker context file %s was not deleted.", build_ctx_path
+        )
+    tracking.MlflowClient().set_tag(run_id, MLFLOW_DOCKER_IMAGE_URI, image_uri)
+    tracking.MlflowClient().set_tag(run_id, MLFLOW_DOCKER_IMAGE_ID, image.id)
     return image
 
 
@@ -818,7 +1053,7 @@ def _get_s3_artifact_cmd_and_envs(artifact_repo):
     envs = {
         "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
         "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
-        "MLFLOW_S3_ENDPOINT_URL": os.environ.get("MLFLOW_S3_ENDPOINT_URL")
+        "MLFLOW_S3_ENDPOINT_URL": os.environ.get("MLFLOW_S3_ENDPOINT_URL"),
     }
     envs = dict((k, v) for k, v in envs.items() if v is not None)
     return volumes, envs
@@ -827,8 +1062,10 @@ def _get_s3_artifact_cmd_and_envs(artifact_repo):
 def _get_azure_blob_artifact_cmd_and_envs(artifact_repo):
     # pylint: disable=unused-argument
     envs = {
-        "AZURE_STORAGE_CONNECTION_STRING": os.environ.get("AZURE_STORAGE_CONNECTION_STRING"),
-        "AZURE_STORAGE_ACCESS_KEY": os.environ.get("AZURE_STORAGE_ACCESS_KEY")
+        "AZURE_STORAGE_CONNECTION_STRING": os.environ.get(
+            "AZURE_STORAGE_CONNECTION_STRING"
+        ),
+        "AZURE_STORAGE_ACCESS_KEY": os.environ.get("AZURE_STORAGE_ACCESS_KEY"),
     }
     envs = dict((k, v) for k, v in envs.items() if v is not None)
     return [], envs
@@ -853,7 +1090,7 @@ def _get_hdfs_artifact_cmd_and_envs(artifact_repo):
         "MLFLOW_HDFS_DRIVER": os.environ.get("MLFLOW_HDFS_DRIVER"),
         "MLFLOW_KERBEROS_TICKET_CACHE": os.environ.get("MLFLOW_KERBEROS_TICKET_CACHE"),
         "MLFLOW_KERBEROS_USER": os.environ.get("MLFLOW_KERBEROS_USER"),
-        "MLFLOW_PYARROW_EXTRA_CONF": os.environ.get("MLFLOW_PYARROW_EXTRA_CONF")
+        "MLFLOW_PYARROW_EXTRA_CONF": os.environ.get("MLFLOW_PYARROW_EXTRA_CONF"),
     }
     envs = dict((k, v) for k, v in envs.items() if v is not None)
 
@@ -895,20 +1132,17 @@ def _get_docker_tracking_cmd_and_envs(tracking_uri):
         # We set these via environment variables so that only the current profile is exposed, rather
         # than all profiles in ~/.databrickscfg; maybe better would be to mount the necessary
         # part of ~/.databrickscfg into the container
-        env_vars[tracking._TRACKING_URI_ENV_VAR] = 'databricks'
-        env_vars['DATABRICKS_HOST'] = config.host
+        env_vars[tracking._TRACKING_URI_ENV_VAR] = "databricks"
+        env_vars["DATABRICKS_HOST"] = config.host
         if config.username:
-            env_vars['DATABRICKS_USERNAME'] = config.username
+            env_vars["DATABRICKS_USERNAME"] = config.username
         if config.password:
-            env_vars['DATABRICKS_PASSWORD'] = config.password
+            env_vars["DATABRICKS_PASSWORD"] = config.password
         if config.token:
-            env_vars['DATABRICKS_TOKEN'] = config.token
+            env_vars["DATABRICKS_TOKEN"] = config.token
         if config.ignore_tls_verification:
-            env_vars['DATABRICKS_INSECURE'] = config.ignore_tls_verification
+            env_vars["DATABRICKS_INSECURE"] = config.ignore_tls_verification
     return cmds, env_vars
 
 
-__all__ = [
-    "run",
-    "SubmittedRun"
-]
+__all__ = ["run", "SubmittedRun"]
