@@ -11,6 +11,15 @@ from mlflow.entities import RunStatus
 _logger = logging.getLogger(__name__)
 
 
+def train_sagemaker():
+    for root, dirs, files in os.walk("/opt/ml/"):
+        path = root.split(os.sep)
+        print((len(path) - 1) * "---", os.path.basename(root))
+        for file in files:
+            print(len(path) * "---", file)
+    return "Success"
+
+
 def _upload_project_to_s3(project_dir, experiment_id, s3_uri):
     import os
     from urllib.parse import urlparse
