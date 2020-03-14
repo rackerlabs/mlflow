@@ -51,7 +51,8 @@ def _get_mlflow_install_step(dockerfile_context_dir, mlflow_home):
     """
     if mlflow_home:
         mlflow_dir = _copy_project(
-            src_path=mlflow_home, dst_path=dockerfile_context_dir)
+            src_path=mlflow_home, dst_path=dockerfile_context_dir
+        )
         return (
             "COPY {mlflow_dir} /opt/mlflow\n"
             "RUN pip install /opt/mlflow\n"
@@ -63,7 +64,8 @@ def _get_mlflow_install_step(dockerfile_context_dir, mlflow_home):
         ).format(mlflow_dir=mlflow_dir)
     else:
         return (
-            "RUN pip install mlflow=={version}\n"
+            # "RUN pip install mlflow=={version}\n"
+            "RUN pip install git+https://github.com/jerrygb/mlflow.git@v1.5.0-sagemaker_add \n"
             "RUN mvn "
             " --batch-mode dependency:copy"
             " -Dartifact=org.mlflow:mlflow-scoring:{version}:pom"
@@ -78,7 +80,9 @@ def _get_mlflow_install_step(dockerfile_context_dir, mlflow_home):
         ).format(version=mlflow.version.VERSION)
 
 
-def _build_image(image_name, entrypoint, mlflow_home=None, custom_setup_steps_hook=None):
+def _build_image(
+    image_name, entrypoint, mlflow_home=None, custom_setup_steps_hook=None
+):
     """
     Build an MLflow Docker image that can be used to serve a
     The image is built locally and it requires Docker to run.
@@ -96,17 +100,25 @@ def _build_image(image_name, entrypoint, mlflow_home=None, custom_setup_steps_ho
     with TempDir() as tmp:
         cwd = tmp.path()
         install_mlflow = _get_mlflow_install_step(cwd, mlflow_home)
-        custom_setup_steps = custom_setup_steps_hook(cwd) if custom_setup_steps_hook else ""
+        custom_setup_steps = (
+            custom_setup_steps_hook(cwd) if custom_setup_steps_hook else ""
+        )
         with open(os.path.join(cwd, "Dockerfile"), "w") as f:
-            f.write(_DOCKERFILE_TEMPLATE.format(
-                install_mlflow=install_mlflow, custom_setup_steps=custom_setup_steps,
-                entrypoint=entrypoint))
+            f.write(
+                _DOCKERFILE_TEMPLATE.format(
+                    install_mlflow=install_mlflow,
+                    custom_setup_steps=custom_setup_steps,
+                    entrypoint=entrypoint,
+                )
+            )
         _logger.info("Building docker image with name %s", image_name)
-        os.system('find {cwd}/'.format(cwd=cwd))
-        proc = Popen(["docker", "build", "-t", image_name, "-f", "Dockerfile", "."],
-                     cwd=cwd,
-                     stdout=PIPE,
-                     stderr=STDOUT,
-                     universal_newlines=True)
+        os.system("find {cwd}/".format(cwd=cwd))
+        proc = Popen(
+            ["docker", "build", "-t", image_name, "-f", "Dockerfile", "."],
+            cwd=cwd,
+            stdout=PIPE,
+            stderr=STDOUT,
+            universal_newlines=True,
+        )
         for x in iter(proc.stdout.readline, ""):
-            eprint(x, end='')
+            eprint(x, end="")

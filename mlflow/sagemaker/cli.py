@@ -271,14 +271,7 @@ def build_and_push_container(build, push, container, mlflow_home):
     if build:
         sagemaker_image_entrypoint = """
         ENTRYPOINT ["python", "-c", "import sys; from mlflow.models import container as C; \
-        def train_sagemaker(): \
-            for root, dirs, files in os.walk("/opt/ml/"): \
-                path = root.split(os.sep) \
-                print((len(path) - 1) * "---", os.path.basename(root)) \
-                for file in files: \
-                    print(len(path) * "---", file) \
-            # print(os.listdir("/opt/ml/") \
-            return "Success"; \
+        from mlflow.projects.sagemaker import train_sagemaker; \
         C._train = train_sagemaker(); \
         C._init(sys.argv[1]);"]
         """
