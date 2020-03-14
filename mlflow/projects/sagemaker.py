@@ -14,6 +14,7 @@ _logger = logging.getLogger(__name__)
 def train_sagemaker():
     import os
 
+    print("Running train sagemaker...")
     for root, dirs, files in os.walk("/opt/ml/"):
         path = root.split(os.sep)
         print((len(path) - 1) * "---", os.path.basename(root))
