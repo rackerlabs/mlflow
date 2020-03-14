@@ -271,8 +271,10 @@ def build_and_push_container(build, push, container, mlflow_home):
     if build:
         sagemaker_image_entrypoint = """
         ENTRYPOINT ["python", "-c", "import sys; from mlflow.models import container as C; \
+        print('injected'); \
         from mlflow.projects.sagemaker import train_sagemaker; \
-        C._train = train_sagemaker(); \
+        C._train = train_sagemaker; \
+        print('overriding'); \
         C._init(sys.argv[1]);"]
         """
 
