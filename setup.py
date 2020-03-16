@@ -56,6 +56,7 @@ setup(
         "sqlalchemy",
         "gorilla",
         "prometheus-flask-exporter",
+        "sagemaker"
     ],
     extras_require={
         "extras": [

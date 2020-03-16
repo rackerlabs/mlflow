@@ -11,6 +11,7 @@ import yaml
 import os
 import sys
 import shutil
+import sagemaker as aws_sm
 from six.moves import urllib
 import subprocess
 import tempfile
@@ -268,6 +269,7 @@ def _run(
         return submitted_run
     elif backend == "sagemaker":
         from mlflow.projects import sagemaker as sm
+        sagemaker_config = _parse_sagemaker_config(backend_config)
 
         tracking.MlflowClient().set_tag(
             active_run.info.run_id, MLFLOW_PROJECT_ENV, "conda"
@@ -275,19 +277,9 @@ def _run(
         tracking.MlflowClient().set_tag(
             active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "sagemaker"
         )
-
-        sagemaker_config = _parse_sagemaker_config(backend_config)
-
-        print(project)
-        print(work_dir)
-
-        submitted_run = sm.run_sagemaker_training_job(
-            uri,
-            work_dir,
-            experiment_id=active_run.info.experiment_id,
-            run_id=active_run.info.run_uuid,
-            sagemaker_config=sagemaker_config,
-        )
+        submitted_run = sm.run_sagemaker_training_job(sagemaker_config, uri, active_run.info.run_id,
+                                                      active_run.info.experiment_id, work_dir, project,
+                                                      synchronous=synchronous)
         return submitted_run
 
     supported_backends = ["local", "databricks", "kubernetes", "sagemaker"]

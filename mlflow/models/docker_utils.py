@@ -26,6 +26,7 @@ RUN apt-get -y update && apt-get install -y --no-install-recommends \
          openjdk-8-jdk \
          git-core \
          maven \
+         tree \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and setup miniconda
