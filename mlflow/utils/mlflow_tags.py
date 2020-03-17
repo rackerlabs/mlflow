@@ -31,6 +31,8 @@ MLFLOW_DATABRICKS_JOB_ID = "mlflow.databricks.jobID"
 MLFLOW_DATABRICKS_JOB_RUN_ID = "mlflow.databricks.jobRunID"
 MLFLOW_DATABRICKS_JOB_TYPE = "mlflow.databricks.jobType"
 
+MLFLOW_SAGEMAKER_JOB_NAME = "mlflow.sagemaker.jobName"
+MLFLOW_SAGEMAKER_JOB_TYPE = "mlflow.sagemaker.jobType"
 
 MLFLOW_PROJECT_BACKEND = "mlflow.project.backend"
 

@@ -12,6 +12,7 @@ import tarfile
 import gzip
 import boto3
 import sagemaker as aws_sm
+from mlflow.entities import SourceType
 from mlflow.exceptions import ExecutionException
 from mlflow.projects.submitted_run import SubmittedRun
 from mlflow.entities import RunStatus
@@ -20,6 +21,14 @@ from mlflow.utils.codebuild_tags import S3_BUCKET_NAME, CODEBUILD_STAGE, CODEBUI
     TRAINING_JOB_NAME, CODEBUILD_INHERENT_NAMES
 from mlflow.utils.mlflow_tags import (
     MLFLOW_PROJECT_ENV,
+    MLFLOW_USER,
+    MLFLOW_SOURCE_NAME,
+    MLFLOW_SOURCE_TYPE,
+    MLFLOW_GIT_COMMIT,
+    MLFLOW_GIT_BRANCH,
+    LEGACY_MLFLOW_GIT_REPO_URL,
+    LEGACY_MLFLOW_GIT_BRANCH_NAME,
+    MLFLOW_PROJECT_ENTRY_POINT,
     MLFLOW_PROJECT_BACKEND,
 )
 
@@ -140,7 +149,7 @@ def _make_tarfile(output_filename, source_dir, archive_name, custom_filter=None)
 
 # def run_sagemaker_training_job(uri, work_dir, experiment_id, run_id, sagemaker_config):
 def run_sagemaker_training_job(sagemaker_config, uri, experiment_id, run_id, work_dir, project, synchronous):
-    job_runner = SagemakerCodeBuildJobRunner(sagemaker_config, experiment_id, run_id, uri, work_dir, project)
+    job_runner = SagemakerCodeBuildJobRunner(experiment_id, run_id, sagemaker_config, uri, work_dir, project)
     job_runner.set_up_tags()
     job_runner.prep_code()
     job_runner.run()
@@ -177,16 +186,19 @@ class SagemakerRunner(object):
         self._set_up_training_job_tags()
 
     def _set_up_training_job_tags(self):
-        self.sagemaker_config['Tags'].append({'Key': 'Uri', 'Value': self.uri})
-        self.sagemaker_config['Tags'].append({'RunId': 'Uri', 'Value': self.run_id})
-        self.sagemaker_config['Tags'].append({'ExperimentId': 'Uri', 'Value': self.experiment_id})
-        self.sagemaker_config['Tags'].append({'WorkDir': 'Uri', 'Value': self.work_dir})
-        self.sagemaker_config['Tags'].append({'WorkDir': 'Project', 'Value': self.project})
-        self.sagemaker_config['HyperParameters']['run_id'] = self.run_id
-        self.sagemaker_config['HyperParameters']['experiment_id'] = self.experiment_id
+        self.sagemaker_config['Tags'].append({'Key': 'Uri', 'Value': self._uri})
+        self.sagemaker_config['Tags'].append({'Key': 'RunId', 'Value': self._mlflow_run_id})
+        self.sagemaker_config['Tags'].append({'Key': 'ExperimentId', 'Value': self._mlflow_experiment_id})
+        self.sagemaker_config['Tags'].append({'Key': 'WorkDir', 'Value': self._work_dir})
+        self.sagemaker_config['Tags'].append({'Key': 'Project', 'Value': self._project.name})
+        self.sagemaker_config['HyperParameters']['run_id'] = self._mlflow_run_id
+        self.sagemaker_config['HyperParameters']['experiment_id'] = self._mlflow_experiment_id
 
     def run(self):
         client = boto3.client("sagemaker")
+        with open(os.path.join(self._work_dir, 'final_training_job.json'), "w") as handle:
+            json.dump(self.sagemaker_config, handle)
+        import pdb;pdb.set_trace()
         response = client.create_training_job(**self.sagemaker_config)
         print(type(response))
 
@@ -204,23 +216,43 @@ class SagemakerRunner(object):
                 self._mlflow_run_id, key, value
             )
 
+    def prep_code(self):
+        store = _get_store()
+        artifact_uri = store.get_run(self._mlflow_run_id).info.artifact_uri
+        bucket_name, prefix = _parse_s3_uri(artifact_uri)
+        code_channel_config = _compress_upload_project_to_s3(bucket_name, prefix)
+        self.sagemaker_config["InputDataConfig"].append(code_channel_config)
+        print("Sagemaker config: {sagemaker_config}")
+
 
 class SagemakerCodeBuildJobRunner(SagemakerRunner):
-    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir, project):
-        super(SagemakerCodeBuildJobRunner).__init__(mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri,
-                                                    work_dir,
-                                                    project)
 
     def set_up_tags(self):
-        super(SagemakerCodeBuildJobRunner).set_up_tags()
+        super(SagemakerCodeBuildJobRunner, self).set_up_tags()
         self._set_up_codebuild_tags()
 
     def _set_up_codebuild_tags(self):
-        pipeline_bucket = self.sagemaker_config[S3_BUCKET_NAME]
-        codebuild_stage = self.sagemaker_config[CODEBUILD_STAGE]
-        codebuild_no = self.sagemaker_config[CODEBUILD_NO]
-        commit_id_short = self.sagemaker_config[MODEL_COMMIT]
-        canonical_name = self.sagemaker_config[CANONICAL_MODEL_NAME]
+        self._pipeline_bucket = self.sagemaker_config[S3_BUCKET_NAME]
+        self._codebuild_stage = self.sagemaker_config[CODEBUILD_STAGE]
+        self._codebuild_no = self.sagemaker_config[CODEBUILD_NO]
+        self._commit_id_short = self.sagemaker_config[MODEL_COMMIT]
+        self._canonical_name = self.sagemaker_config[CANONICAL_MODEL_NAME]
+
+        tracking.MlflowClient().set_tag(
+            self._mlflow_run_id, MLFLOW_USER, "sagemaker-training"
+        )
+
+        tags = {
+            MLFLOW_USER: "{}-{}".format(self._codebuild_stage, self._codebuild_no),
+            MLFLOW_SOURCE_NAME: self._canonical_name,
+            MLFLOW_SOURCE_TYPE: SourceType.to_string(SourceType.JOB),
+            MLFLOW_GIT_COMMIT: self._commit_id_short
+        }
+
+        for key, value in tags.items():
+            tracking.MlflowClient().set_tag(
+                self._mlflow_run_id, key, value
+            )
 
         for name in CODEBUILD_INHERENT_NAMES:
             value = self.sagemaker_config[name]
@@ -230,10 +262,9 @@ class SagemakerCodeBuildJobRunner(SagemakerRunner):
             del self.sagemaker_config[name]
 
     def prep_code(self):
-        store = _get_store()
-        artifact_uri = store.get_run(self._mlflow_run_id).info.artifact_uri
-        bucket_name, prefix = _parse_s3_uri(artifact_uri)
-        code_channel_config = _compress_upload_project_to_s3(bucket_name, prefix)
+        code_channel_config = _compress_upload_project_to_s3_codebuild(self._pipeline_bucket, self._canonical_name,
+                                                                       self._codebuild_stage,
+                                                                       self._codebuild_no, self._commit_id_short)
         self.sagemaker_config["InputDataConfig"].append(code_channel_config)
         print("Sagemaker config: {sagemaker_config}")
 
@@ -247,7 +278,7 @@ class SagemakerSubmittedRun(SubmittedRun):
     :param job_namespace: Sagemaker job namespace.
     """
 
-    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir, project, synchronous):
+    def __init__(self, sagemaker_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous):
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri

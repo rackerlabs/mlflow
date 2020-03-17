@@ -277,8 +277,8 @@ def _run(
         tracking.MlflowClient().set_tag(
             active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "sagemaker"
         )
-        submitted_run = sm.run_sagemaker_training_job(sagemaker_config, uri, active_run.info.run_id,
-                                                      active_run.info.experiment_id, work_dir, project,
+        submitted_run = sm.run_sagemaker_training_job(sagemaker_config, uri, active_run.info.experiment_id,
+                                                      active_run.info.run_id, work_dir, project,
                                                       synchronous=synchronous)
         return submitted_run
 
