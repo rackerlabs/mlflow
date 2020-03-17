@@ -18,7 +18,6 @@ import tempfile
 import logging
 import posixpath
 import docker
-
 import mlflow.projects.databricks
 import mlflow.tracking as tracking
 import mlflow.tracking.fluent as fluent
@@ -64,6 +63,7 @@ from mlflow.utils.mlflow_tags import (
     MLFLOW_PARENT_RUN_ID,
     MLFLOW_PROJECT_BACKEND,
 )
+from mlflow.utils.codebuild_tags import MODEL_SRC_DIR
 from mlflow.utils.uri import get_db_profile_from_uri, is_databricks_uri
 
 # Environment variable indicating a path to a conda installation. MLflow will default to running
@@ -116,17 +116,18 @@ def _resolve_experiment_id(experiment_name=None, experiment_id=None):
 
 
 def _run(
-    uri,
-    experiment_id,
-    entry_point="main",
-    version=None,
-    parameters=None,
-    backend=None,
-    backend_config=None,
-    use_conda=True,
-    storage_dir=None,
-    synchronous=True,
-    run_id=None,
+        uri,
+        experiment_id,
+        entry_point="main",
+        version=None,
+        parameters=None,
+        backend=None,
+        backend_config=None,
+        use_conda=True,
+        storage_dir=None,
+        synchronous=True,
+        run_id=None,
+        ignore_duplicate_params=False
 ):
     """
     Helper that delegates to the project-running method corresponding to the passed-in backend.
@@ -149,9 +150,20 @@ def _run(
     final_params, extra_params = entry_point_obj.compute_parameters(
         parameters, storage_dir=None
     )
-    for key, value in list(final_params.items()) + list(extra_params.items()):
-        tracking.MlflowClient().log_param(active_run.info.run_id, key, value)
 
+    _logger.info('Current Parameters')
+    for key, value in active_run.data.params.items():
+        _logger.info("[%s] Key: %s Value: %s", backend, key, value)
+    for key, value in list(final_params.items()) + list(extra_params.items()):
+        try:
+            tracking.MlflowClient().log_param(active_run.info.run_id, key, value)
+        except mlflow.exceptions.RestException as e:
+            if str(e).find('INVALID_PARAMETER_VALUE: Changing param values is not allowed.') > -1 \
+                    and not ignore_duplicate_params:
+                raise e
+    _logger.info('Merged Parameters')
+    for key, value in active_run.data.params.items():
+        _logger.info("[%s] Key: %s Value: %s", backend, key, value)
     repo_url = _get_git_repo_url(work_dir)
     if repo_url is not None:
         for tag in [MLFLOW_GIT_REPO_URL, LEGACY_MLFLOW_GIT_REPO_URL]:
@@ -277,9 +289,25 @@ def _run(
         tracking.MlflowClient().set_tag(
             active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "sagemaker"
         )
+        model_source_dir = sagemaker_config[MODEL_SRC_DIR]
+        del sagemaker_config[MODEL_SRC_DIR]
         submitted_run = sm.run_sagemaker_training_job(sagemaker_config, uri, active_run.info.experiment_id,
                                                       active_run.info.run_id, work_dir, project,
                                                       synchronous=synchronous)
+
+        with open(os.path.join(model_source_dir, 'RUN_ID'), 'w') as f:
+            f.write(active_run.info.run_id)
+
+        with open(os.path.join(model_source_dir, 'EXPERIMENT_ID'), 'w') as f:
+            f.write(active_run.info.experiment_id)
+
+        with open(os.path.join(model_source_dir, 'TRACKING_URL'), 'w') as f:
+            f.write(mlflow.get_tracking_uri())
+
+        with open(os.path.join(model_source_dir, 'RUN_ID_URL'), 'w') as f:
+            f.write('{}/#/experiments/{}/runs/{}'.format(mlflow.get_tracking_uri(), active_run.info.experiment_id,
+                                                         active_run.info.run_id))
+
         return submitted_run
 
     supported_backends = ["local", "databricks", "kubernetes", "sagemaker"]
@@ -290,18 +318,19 @@ def _run(
 
 
 def run(
-    uri,
-    entry_point="main",
-    version=None,
-    parameters=None,
-    experiment_name=None,
-    experiment_id=None,
-    backend=None,
-    backend_config=None,
-    use_conda=True,
-    storage_dir=None,
-    synchronous=True,
-    run_id=None,
+        uri,
+        entry_point="main",
+        version=None,
+        parameters=None,
+        experiment_name=None,
+        experiment_id=None,
+        backend=None,
+        backend_config=None,
+        use_conda=True,
+        storage_dir=None,
+        synchronous=True,
+        run_id=None,
+        ignore_duplicate_params=False
 ):
     """
     Run an MLflow project. The project can be local or stored at a Git URI.
@@ -356,9 +385,9 @@ def run(
 
     cluster_spec_dict = backend_config
     if (
-        backend_config
-        and type(backend_config) != dict
-        and os.path.splitext(backend_config)[-1] == ".json"
+            backend_config
+            and type(backend_config) != dict
+            and os.path.splitext(backend_config)[-1] == ".json"
     ):
         with open(backend_config, "r") as handle:
             try:
@@ -391,13 +420,14 @@ def run(
         storage_dir=storage_dir,
         synchronous=synchronous,
         run_id=run_id,
+        ignore_duplicate_params=ignore_duplicate_params
     )
     if synchronous:
-        _wait_for(submitted_run_obj)
+        _wait_for(submitted_run_obj, backend)
     return submitted_run_obj
 
 
-def _wait_for(submitted_run_obj):
+def _wait_for(submitted_run_obj, backend):
     """Wait on the passed-in submitted run, reporting its status to the tracking server."""
     run_id = submitted_run_obj.run_id
     active_run = None
@@ -408,13 +438,15 @@ def _wait_for(submitted_run_obj):
             tracking.MlflowClient().get_run(run_id) if run_id is not None else None
         )
         if submitted_run_obj.wait():
-            _logger.info("=== Run (ID '%s') succeeded ===", run_id)
+            _logger.info("=== Run (ID '%s') succeeded === %s", run_id, backend)
             _maybe_set_run_terminated(active_run, "FINISHED")
         else:
+            _logger.error("ERROR Submitted Job Type %s", submitted_run_obj)
+            _logger.warning("=== Run (ID '%s') failed (Backend: %s) ===", run_id, backend)
             _maybe_set_run_terminated(active_run, "FAILED")
-            raise ExecutionException("Run (ID '%s') failed" % run_id)
+            raise ExecutionException("Run (ID '%s') failed (Backend: %s)" % (run_id, backend))
     except KeyboardInterrupt:
-        _logger.error("=== Run (ID '%s') interrupted, cancelling run ===", run_id)
+        _logger.error("=== Run (ID '%s') interrupted, cancelling run (Backend: %s) ===", run_id, backend)
         submitted_run_obj.cancel()
         _maybe_set_run_terminated(active_run, "FAILED")
         raise
@@ -430,7 +462,7 @@ def _fetch_project(uri, force_tempdir, version=None):
     """
     parsed_uri, subdirectory = _parse_subdirectory(uri)
     use_temp_dst_dir = (
-        force_tempdir or _is_zip_uri(parsed_uri) or not _is_local_uri(parsed_uri)
+            force_tempdir or _is_zip_uri(parsed_uri) or not _is_local_uri(parsed_uri)
     )
     dst_dir = tempfile.mkdtemp() if use_temp_dst_dir else parsed_uri
     if use_temp_dst_dir:
@@ -454,7 +486,7 @@ def _fetch_project(uri, force_tempdir, version=None):
             dir_util.copy_tree(src=parsed_uri, dst=dst_dir)
     else:
         assert _GIT_URI_REGEX.match(parsed_uri), (
-            "Non-local URI %s should be a Git URI" % parsed_uri
+                "Non-local URI %s should be a Git URI" % parsed_uri
         )
         _fetch_git_repo(parsed_uri, version, dst_dir)
     res = os.path.abspath(os.path.join(dst_dir, subdirectory))
@@ -740,7 +772,7 @@ def _get_run_env_vars(run_id, experiment_id):
 
 
 def _invoke_mlflow_run_subprocess(
-    work_dir, entry_point, parameters, experiment_id, use_conda, storage_dir, run_id
+        work_dir, entry_point, parameters, experiment_id, use_conda, storage_dir, run_id
 ):
     """
     Run an MLflow project asynchronously by invoking ``mlflow run`` in a subprocess, returning
@@ -764,7 +796,7 @@ def _invoke_mlflow_run_subprocess(
 def _get_conda_command(conda_env_name):
     #  Checking for newer conda versions
     if os.name != "nt" and (
-        "CONDA_EXE" in os.environ or "MLFLOW_CONDA_HOME" in os.environ
+            "CONDA_EXE" in os.environ or "MLFLOW_CONDA_HOME" in os.environ
     ):
         conda_path = _get_conda_bin_executable("conda")
         activate_conda_env = [

@@ -1,9 +1,8 @@
 import os
 import re
 import tempfile
-
+import shutil
 from mlflow.exceptions import ExecutionException
-
 
 # TODO: this should be restricted to just Git repos and not S3 and stuff like that
 _GIT_URI_REGEX = re.compile(r"^[^/]*:")
