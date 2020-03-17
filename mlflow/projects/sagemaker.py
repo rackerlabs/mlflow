@@ -198,7 +198,6 @@ class SagemakerRunner(object):
         client = boto3.client("sagemaker")
         with open(os.path.join(self._work_dir, 'final_training_job.json'), "w") as handle:
             json.dump(self.sagemaker_config, handle)
-        import pdb;pdb.set_trace()
         response = client.create_training_job(**self.sagemaker_config)
         print(type(response))
 
