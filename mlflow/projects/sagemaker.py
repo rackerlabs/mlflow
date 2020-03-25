@@ -12,8 +12,6 @@ import tarfile
 import gzip
 import boto3
 import sagemaker as aws_sm
-from botocore import exceptions
-from sagemaker.utils import base_name_from_image, name_from_base
 from mlflow import set_tracking_uri
 from mlflow.entities import SourceType
 from mlflow.exceptions import ExecutionException, MlflowException
@@ -34,9 +32,6 @@ from mlflow.utils.mlflow_tags import (
     MLFLOW_GIT_REPO_URL,
     MLFLOW_PROJECT_BACKEND,
 )
-
-TRAIN_MODE = 'train'
-INFERENCE_MODE = 'train'
 
 _logger = logging.getLogger(__name__)
 
@@ -185,14 +180,12 @@ def _make_tarfile(output_filename, source_dir, archive_name, custom_filter=None)
 
 # def run_sagemaker_training_job(uri, work_dir, experiment_id, run_id, sagemaker_config):
 def run_sagemaker_training_job(sagemaker_config, uri, experiment_id, run_id, work_dir, project, synchronous):
-    job_runner = SagemakerCodeBuildJobRunner(experiment_id, run_id, sagemaker_config, uri, work_dir, project,
-                                             TRAIN_MODE)
-    job_runner.parse_config()
+    job_runner = SagemakerCodeBuildJobRunner(experiment_id, run_id, sagemaker_config, uri, work_dir, project)
+    job_runner.setup_tags()
     job_runner.setup_code_channel()
     job_runner.run()
 
-    return SagemakerSubmittedRun(job_runner, sagemaker_config, experiment_id, run_id, uri, work_dir, project,
-                                 synchronous)
+    return SagemakerSubmittedRun(sagemaker_config, experiment_id, run_id, uri, work_dir, project, synchronous)
     # env_vars = {
     #     tracking._TRACKING_URI_ENV_VAR: tracking_uri,
     #     tracking._EXPERIMENT_ID_ENV_VAR: experiment_id,
@@ -210,72 +203,45 @@ def _parse_s3_uri(uri):
 
 
 class SagemakerRunner(object):
-    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config=None, uri='', work_dir='',
-                 project='mlflow-project', mode=TRAIN_MODE, sagemaker_session=None, model_name=None):
+    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir, project):
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri
         self._work_dir = work_dir
         self._project = project
         self.sagemaker_config = sagemaker_config
-        self.mode = mode
-        self.tags = []
-        self.sagemaker_session = sagemaker_session
-        self.model_name = model_name
+        self.training_job_name = sagemaker_config[TRAINING_JOB_NAME]
 
-    def parse_config(self):
-        pass
-
-    def _setup_tags(self):
+    def setup_tags(self):
         self._setup_mlflow_tags()
-        self._setup_job_tags()
+        self._setup_training_job_tags()
 
-    def _setup_job_tags(self):
-        if self.mode == TRAIN_MODE:
-            self.sagemaker_config['Tags'].append({'Key': 'RunId', 'Value': self._mlflow_run_id})
-            self.sagemaker_config['Tags'].append({'Key': 'ExperimentId', 'Value': self._mlflow_experiment_id})
-            self.sagemaker_config['Tags'].append({'Key': 'WorkDir', 'Value': self._work_dir})
-            self.sagemaker_config['Tags'].append({'Key': 'Project', 'Value': self._project.name})
-            self.tags = self.sagemaker_config['Tags']
-        else:
-            self.tags.append({'Key': 'RunId', 'Value': self._mlflow_run_id})
-            self.tags.append({'Key': 'ExperimentId', 'Value': self._mlflow_experiment_id})
-            self.tags.append({'Key': 'WorkDir', 'Value': self._work_dir})
-            self.tags.append({'Key': 'Project', 'Value': self._project.name})
+    def _setup_training_job_tags(self):
+        self.sagemaker_config['Tags'].append({'Key': 'RunId', 'Value': self._mlflow_run_id})
+        self.sagemaker_config['Tags'].append({'Key': 'ExperimentId', 'Value': self._mlflow_experiment_id})
+        self.sagemaker_config['Tags'].append({'Key': 'WorkDir', 'Value': self._work_dir})
+        self.sagemaker_config['Tags'].append({'Key': 'Project', 'Value': self._project.name})
+        self.sagemaker_config['HyperParameters']['run_id'] = self._mlflow_run_id
+        self.sagemaker_config['HyperParameters']['experiment_id'] = self._mlflow_experiment_id
+        self.sagemaker_config['HyperParameters']['tracking_uri'] = get_tracking_uri()
 
     def run(self):
-        if self.mode == TRAIN_MODE:
-            client = boto3.client("sagemaker")
-            with open(os.path.join(self._work_dir, 'final_training_job.json'), "w") as handle:
-                json.dump(self.sagemaker_config, handle)
-            response = client.create_training_job(**self.sagemaker_config)
-            try:
-                if response['ResponseMetadata']['HTTPStatusCode'] == 200:
-                    training_job_arn = response['TrainingJobArn']
-                    training_job_region = training_job_arn.split(':')[3]
-                    training_job_name = training_job_arn.split(':')[-1].split('/')[-1]
-                    training_job_url = 'https://console.aws.amazon.com/sagemaker/home?region={}#/jobs/{}'.format(
-                        training_job_region, training_job_name)
-                    _logger.info('Successfully started the training job %s - %s', training_job_arn, training_job_url)
-                else:
-                    raise MlflowException('Failed to start Sagemaker training job. Response: %s' % response)
-            except KeyError as ke:
+        client = boto3.client("sagemaker")
+        with open(os.path.join(self._work_dir, 'final_training_job.json'), "w") as handle:
+            json.dump(self.sagemaker_config, handle)
+        response = client.create_training_job(**self.sagemaker_config)
+        try:
+            if response['ResponseMetadata']['HTTPStatusCode'] == 200:
+                training_job_arn = response['TrainingJobArn']
+                training_job_region = training_job_arn.split(':')[3]
+                training_job_name = training_job_arn.split(':')[-1].split('/')[-1]
+                training_job_url = 'https://console.aws.amazon.com/sagemaker/home?region={}#/jobs/{}'.format(
+                    training_job_region, training_job_name)
+                _logger.info('Successfully started the training job %s - %s', training_job_arn, training_job_url)
+            else:
                 raise MlflowException('Failed to start Sagemaker training job. Response: %s' % response)
-        elif self.mode == INFERENCE_MODE:
-            self.sagemaker_session.transform(
-                job_name=transformer._current_job_name,
-                model_name=transformer.model_name,
-                strategy=transformer.strategy,
-                max_concurrent_transforms=transformer.max_concurrent_transforms,
-                max_payload=transformer.max_payload,
-                env=transformer.env,
-                input_config=config["input_config"],
-                output_config=config["output_config"],
-                resource_config=config["resource_config"],
-                experiment_config=experiment_config,
-                tags=transformer.tags,
-                data_processing=data_processing,
-            )
+        except KeyError as ke:
+            raise MlflowException('Failed to start Sagemaker training job. Response: %s' % response)
 
     def _setup_mlflow_tags(self):
         tracking.MlflowClient().set_tag(
@@ -300,62 +266,48 @@ class SagemakerRunner(object):
 
 
 class SagemakerCodeBuildJobRunner(SagemakerRunner):
-    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config=None, uri='', work_dir='',
-                 project='mlflow-project', mode=TRAIN_MODE, sagemaker_session=None, model_name=None):
-        super(SagemakerCodeBuildJobRunner, self).__init__(mlflow_experiment_id, mlflow_run_id, sagemaker_config,
-                                                          uri, work_dir, project, mode, sagemaker_session, model_name)
-        self._pipeline_bucket = None
-        self._codebuild_stage = None
-        self._codebuild_no = None
-        self._codebuild_url = None
-        self._commit_id_short = None
-        self._canonical_name = None
-        self._source_name = None
-        self._git_repo_url = None
 
-    def _setup_tags(self):
-        super(SagemakerCodeBuildJobRunner, self)._setup_tags()
+    def setup_tags(self):
+        super(SagemakerCodeBuildJobRunner, self).setup_tags()
         self._set_up_codebuild_tags()
-        self._set_up_job_tags()
 
     def _set_up_codebuild_tags(self):
-        if self.sagemaker_config:
-            self._pipeline_bucket = self.sagemaker_config[S3_BUCKET_NAME]
-            self._codebuild_stage = self.sagemaker_config[CODEBUILD_STAGE]
-            self._codebuild_no = self.sagemaker_config[CODEBUILD_NO]
-            self._codebuild_url = self.sagemaker_config[CODEBUILD_URL]
-            self._commit_id_short = self.sagemaker_config[MODEL_COMMIT]
-            self._canonical_name = self.sagemaker_config[CANONICAL_MODEL_NAME]
-            self._source_name = self.sagemaker_config[GIT_REPO_NAME]
-            self._git_repo_url = self.sagemaker_config[GIT_REPO_URL]
+        self._pipeline_bucket = self.sagemaker_config[S3_BUCKET_NAME]
+        self._codebuild_stage = self.sagemaker_config[CODEBUILD_STAGE]
+        self._codebuild_no = self.sagemaker_config[CODEBUILD_NO]
+        self._codebuild_url = self.sagemaker_config[CODEBUILD_URL]
+        self._commit_id_short = self.sagemaker_config[MODEL_COMMIT]
+        self._canonical_name = self.sagemaker_config[CANONICAL_MODEL_NAME]
+        self._source_name = self.sagemaker_config[GIT_REPO_NAME]
+        self._git_repo_url = self.sagemaker_config[GIT_REPO_URL]
+
 
         # Mlflow Tags
+        tracking.MlflowClient().set_tag(
+            self._mlflow_run_id, MLFLOW_USER, "sagemaker-training"
+        )
+
         tags = {
-            MLFLOW_USER: "codebuild-{}".format(self.mode),
+            MLFLOW_USER: "codebuild",
             MLFLOW_SOURCE_TYPE: SourceType.to_string(SourceType.JOB),
-            MLFLOW_GIT_COMMIT: self._commit_id_short if self._commit_id_short else '',
-            MLFLOW_RUN_NAME: "{}-{}".format(self._codebuild_stage,
-                                            self._codebuild_no) if self._codebuild_stage and self._codebuild_no else '',
+            MLFLOW_GIT_COMMIT: self._commit_id_short,
+            MLFLOW_RUN_NAME: "{}-{}".format(self._codebuild_stage, self._codebuild_no),
             MLFLOW_GIT_BRANCH: "master",  # TODO: improve this hardcode later
-            MLFLOW_SOURCE_NAME: self._source_name if self._source_name else '',
-            MLFLOW_GIT_REPO_URL: self._git_repo_url if self._git_repo_url else ''
+            MLFLOW_SOURCE_NAME: self._source_name,
+            MLFLOW_GIT_REPO_URL: self._git_repo_url
         }
 
         for key, value in tags.items():
-            if value:
-                tracking.MlflowClient().set_tag(
-                    self._mlflow_run_id, key, value
-                )
-        if self.sagemaker_config:
-            for name in CODEBUILD_INHERENT_NAMES:
-                value = self.sagemaker_config[name]
-                tracking.MlflowClient().set_tag(
-                    self._mlflow_run_id, name, value
-                )
-                del self.sagemaker_config[name]
+            tracking.MlflowClient().set_tag(
+                self._mlflow_run_id, key, value
+            )
 
-    def _set_up_job_tags(self):
-        pass
+        for name in CODEBUILD_INHERENT_NAMES:
+            value = self.sagemaker_config[name]
+            tracking.MlflowClient().set_tag(
+                self._mlflow_run_id, name, value
+            )
+            del self.sagemaker_config[name]
 
     def setup_code_channel(self):
         code_channel_config = _compress_upload_project_to_s3_codebuild(self._work_dir, self._pipeline_bucket,
@@ -363,40 +315,6 @@ class SagemakerCodeBuildJobRunner(SagemakerRunner):
                                                                        self._codebuild_stage,
                                                                        self._codebuild_no, self._commit_id_short)
         self.sagemaker_config["InputDataConfig"].append(code_channel_config)
-
-    def parse_config(self):
-        if self.mode == TRAIN_MODE:
-            self.sagemaker_config['HyperParameters']['run_id'] = self._mlflow_run_id
-            self.sagemaker_config['HyperParameters']['experiment_id'] = self._mlflow_experiment_id
-            self.sagemaker_config['HyperParameters']['tracking_uri'] = get_tracking_uri()
-        elif self.mode == INFERENCE_MODE:
-            if self.sagemaker_config:
-
-                self.strategy = self.sagemaker_config['Strategy']
-                self.env = self.sagemaker_config['Env']
-
-                self.output_path = self.sagemaker_config['OutputDataConfig']['S3OutputPath']
-                self.output_kms_key = self.sagemaker_config['OutputDataConfig']['KmsKeyId']
-                self.accept = self.sagemaker_config.get('Accept', None)
-                self.assemble_with = self.sagemaker_config.get('AssembledWith', 'Line')
-
-                self.instance_count = int(self.sagemaker_config['ResourceConfig'].get('InstanceCount', 1))
-                self.instance_type = self.sagemaker_config['ResourceConfig'].get('InstanceType', 'ml.m4.xlarge')
-                self.volume_kms_key = self.sagemaker_config['ResourceConfig'].get('VolumeKmsKey', None)
-
-                self.max_concurrent_transforms = self.sagemaker_config['MaxConcurrentTransforms']
-                self.max_payload = self.sagemaker_config['MaxPayload']
-
-                self._current_job_name = None
-                self.latest_transform_job = None
-                self._reset_output_path = False
-                config = _TransformJob._load_config(
-                    data, data_type, content_type, compression_type, split_type, transformer
-                )
-                data_processing = self.sagemaker_config.get('DataProcessing', None)
-
-        self._setup_tags()
-        super()._parse_config()
 
 
 class SagemakerSubmittedRun(SubmittedRun):
@@ -408,12 +326,15 @@ class SagemakerSubmittedRun(SubmittedRun):
     :param job_namespace: Sagemaker job namespace.
     """
 
-    def __init__(self, context_runner, sagemaker_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project,
-                 synchronous):
+    def __init__(self, sagemaker_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous):
+        self._mlflow_run_id = mlflow_run_id
+        self._mlflow_experiment_id = mlflow_experiment_id
+        self._uri = uri
+        self._work_dir = work_dir
+        self._project = project
+        self.sagemaker_config = sagemaker_config
         self.synchronous = synchronous
-        self.context_runner = context_runner
-        if self.context_runner.mode == TRAIN_MODE:
-            self._current_job_name = sagemaker_config[TRAINING_JOB_NAME]
+        self.training_job_name = sagemaker_config[TRAINING_JOB_NAME]
 
         super(SagemakerSubmittedRun, self).__init__()
 
@@ -421,179 +342,10 @@ class SagemakerSubmittedRun(SubmittedRun):
     def run_id(self):
         return self._mlflow_run_id
 
-    def wait(self, logs=True):
+    def wait(self):
         sagemaker_session = aws_sm.Session()
-        if self.context_runner.mode == TRAIN_MODE:
-            try:
-                sagemaker_session.logs_for_job(self._current_job_name, wait=self.synchronous, log_type='All')
-            except Exception as e:
-                print('Exception occurred while waiting for sagemaker training job', str(e))
-        elif self.context_runner.mode == INFERENCE_MODE:
-            try:
-                sagemaker_session.logs_for_transform_job(self._current_job_name, wait=self.synchronous)
-            except Exception as e:
-                print('Exception occurred while waiting for sagemaker inference job', str(e))
-
-        return True
-
-
-# TODO: remove this declaration
-class SagemakerTransformer(object):
-
-    def __init__(
-            self,
-            model_name,
-            instance_count,
-            instance_type,
-            strategy=None,
-            assemble_with=None,
-            output_path=None,
-            output_kms_key=None,
-            accept=None,
-            max_concurrent_transforms=None,
-            max_payload=None,
-            tags=None,
-            env=None,
-            base_transform_job_name=None,
-            sagemaker_session=None,
-            volume_kms_key=None,
-    ):
-        pass
-    def transform(
-            self,
-            experiment_id,
-            run_id,
-            data,
-            data_type="S3Prefix",
-            content_type=None,
-            compression_type=None,
-            split_type=None,
-            job_name=None,
-            input_filter=None,
-            output_filter=None,
-            join_source=None,
-            experiment_config=None,
-            wait=False,
-            logs=False,
-    ):
-        local_mode = self.sagemaker_session.local_mode
-        if not local_mode and not data.startswith("s3://"):
-            raise ValueError("Invalid S3 URI: {}".format(data))
-
-        if job_name is not None:
-            self._current_job_name = job_name
-        else:
-            base_name = self.base_transform_job_name
-
-            if base_name is None:
-                base_name = self._retrieve_base_name()
-
-            self._current_job_name = name_from_base(base_name)
-
-        if self.output_path is None or self._reset_output_path is True:
-            self.output_path = "s3://{}/{}".format(
-                self.sagemaker_session.default_bucket(), self._current_job_name
-            )
-            self._reset_output_path = True
-
-
-
-        #     SagemakerCodeBuildJobRunner.start_new(
-        #     self,
-        #     data,
-        #     data_type,
-        #     content_type,
-        #     compression_type,
-        #     split_type,
-        #     input_filter,
-        #     output_filter,
-        #     join_source,
-        #     experiment_config,
-        # )
-
-        if wait:
-            self.latest_transform_job.wait(logs=logs)
-
-    def delete_model(self):
-        """Delete the corresponding SageMaker model for this Transformer."""
-        self.sagemaker_session.delete_model(self.model_name)
-
-    def _retrieve_base_name(self):
-        """Placeholder docstring"""
-        image_name = self._retrieve_image_name()
-
-        if image_name:
-            return base_name_from_image(image_name)
-
-        return self.model_name
-
-    def _retrieve_image_name(self):
-        """Placeholder docstring"""
         try:
-            model_desc = self.sagemaker_session.sagemaker_client.describe_model(
-                ModelName=self.model_name
-            )
-
-            primary_container = model_desc.get("PrimaryContainer")
-            if primary_container:
-                return primary_container.get("Image")
-
-            containers = model_desc.get("Containers")
-            if containers:
-                return containers[0].get("Image")
-
-            return None
-
-        except exceptions.ClientError:
-            raise ValueError(
-                "Failed to fetch model information for %s. "
-                "Please ensure that the model exists. "
-                "Local instance types require locally created models." % self.model_name
-            )
-
-    def wait(self, logs=True):
-        """Placeholder docstring"""
-        self._ensure_last_transform_job()
-        self.latest_transform_job.wait(logs=logs)
-
-    def stop_transform_job(self, wait=True):
-        """Stop latest running batch transform job.
-        """
-        self._ensure_last_transform_job()
-        self.latest_transform_job.stop()
-        if wait:
-            self.latest_transform_job.wait()
-
-    def _ensure_last_transform_job(self):
-        """Placeholder docstring"""
-        if self.latest_transform_job is None:
-            raise ValueError("No transform job available")
-
-    @classmethod
-    def _prepare_init_params_from_job_description(cls, job_details):
-        """Convert the transform job description to init params that can be
-        handled by the class constructor
-
-        Args:
-            job_details (dict): the returned job details from a
-                describe_transform_job API call.
-
-        Returns:
-            dict: The transformed init_params
-        """
-        init_params = dict()
-
-        init_params["model_name"] = job_details["ModelName"]
-        init_params["instance_count"] = job_details["TransformResources"]["InstanceCount"]
-        init_params["instance_type"] = job_details["TransformResources"]["InstanceType"]
-        init_params["volume_kms_key"] = job_details["TransformResources"].get("VolumeKmsKeyId")
-        init_params["strategy"] = job_details.get("BatchStrategy")
-        init_params["assemble_with"] = job_details["TransformOutput"].get("AssembleWith")
-        init_params["output_path"] = job_details["TransformOutput"]["S3OutputPath"]
-        init_params["output_kms_key"] = job_details["TransformOutput"].get("KmsKeyId")
-        init_params["accept"] = job_details["TransformOutput"].get("Accept")
-        init_params["max_concurrent_transforms"] = job_details.get("MaxConcurrentTransforms")
-        init_params["max_payload"] = job_details.get("MaxPayloadInMB")
-        init_params["base_transform_job_name"] = job_details["TransformJobName"]
-
-        return init_params
+            sagemaker_session.logs_for_job(self.training_job_name, wait=self.synchronous, log_type='All')
+        except Exception as e:
+            print('Exception occurred while waiting for sagemaker job', str(e))
+        return True

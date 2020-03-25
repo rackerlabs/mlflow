@@ -5,8 +5,6 @@ from __future__ import print_function
 
 import os
 from subprocess import Popen, PIPE, STDOUT
-
-from mlflow.projects.sagemaker import SagemakerCodeBuildJobRunner, SagemakerSubmittedRun
 from six.moves import urllib
 import sys
 import tarfile
@@ -22,9 +20,7 @@ from mlflow.protos.databricks_pb2 import RESOURCE_DOES_NOT_EXIST, INVALID_PARAME
 from mlflow.tracking.artifact_utils import _download_artifact_from_uri
 from mlflow.utils import get_unique_resource_id
 from mlflow.utils.file_utils import TempDir
-from mlflow.tracking import _RUN_ID_ENV_VAR, _TRACKING_URI_ENV_VAR, _EXPERIMENT_ID_ENV_VAR
 from mlflow.utils.logging_utils import eprint
-from mlflow.projects.sagemaker import INFERENCE_MODE, TRAIN_MODE
 from mlflow.models.container import SUPPORTED_FLAVORS as SUPPORTED_DEPLOYMENT_FLAVORS
 from mlflow.models.container import DEPLOYMENT_CONFIG_KEY_FLAVOR_NAME
 
@@ -99,7 +95,7 @@ def _validate_deployment_flavor(model_config, flavor):
             message=("The specified model does not contain the specified deployment flavor:"
                      " `{flavor_name}`. Please use one of the following deployment flavors"
                      " that the model contains: {model_flavors}".format(
-                flavor_name=flavor, model_flavors=model_config.flavors.keys())),
+                        flavor_name=flavor, model_flavors=model_config.flavors.keys())),
             error_code=RESOURCE_DOES_NOT_EXIST)
 
 
@@ -137,76 +133,6 @@ def push_image_to_ecr(image=DEFAULT_IMAGE_NAME):
     docker_push_cmd = "docker push {}".format(fullname)
     cmd = ";\n".join([docker_login_cmd, docker_tag_cmd, docker_push_cmd])
     os.system(cmd)
-
-
-def deploy_batch_transform(job_name, model_uri, execution_role_arn=None, bucket=None,
-                           image_url=None, region_name="us-west-2", archive=False, sagemaker_config=None,
-                           instance_type=DEFAULT_SAGEMAKER_INSTANCE_TYPE,
-                           instance_count=DEFAULT_SAGEMAKER_INSTANCE_COUNT, vpc_config=None, flavor=None,
-                           synchronous=True, timeout_seconds=1200):
-    import boto3
-    if (not archive) and (not synchronous):
-        raise MlflowException(
-            message=(
-                "Resources must be archived when `deploy()` is executed in non-synchronous mode."
-                " Either set `synchronous=True` or `archive=True`."),
-            error_code=INVALID_PARAMETER_VALUE)
-    model_path = _download_artifact_from_uri(model_uri)
-    model_config_path = os.path.join(model_path, "MLmodel")
-    if not os.path.exists(model_config_path):
-        raise MlflowException(
-            message=(
-                "Failed to find MLmodel configuration within the specified model's"
-                " root directory."),
-            error_code=INVALID_PARAMETER_VALUE)
-    model_config = Model.load(model_config_path)
-
-    if flavor is None:
-        flavor = _get_preferred_deployment_flavor(model_config)
-    else:
-        _validate_deployment_flavor(model_config, flavor)
-    _logger.info("Using the %s flavor for deployment!", flavor)
-
-    sage_client = boto3.client('sagemaker', region_name=region_name)
-    s3_client = boto3.client('s3', region_name=region_name)
-    if not image_url:
-        image_url = _get_default_image_url(region_name=region_name)
-    if not execution_role_arn:
-        execution_role_arn = _get_assumed_role_arn()
-    if not bucket:
-        _logger.info("No model data bucket specified, using the default bucket")
-        bucket = _get_default_s3_bucket(region_name)
-
-    model_s3_path = _upload_s3(local_model_path=model_path,
-                               bucket=bucket,
-                               prefix=job_name,
-                               region_name=region_name,
-                               s3_client=s3_client)
-
-    _logger.info("Creating new model with name: %s ...", job_name)
-
-    model_response = _create_sagemaker_model(model_name=job_name,
-                                             model_s3_path=model_s3_path,
-                                             model_uri=model_uri,
-                                             flavor=flavor,
-                                             vpc_config=vpc_config,
-                                             image_url=image_url,
-                                             execution_role=execution_role_arn,
-                                             sage_client=sage_client)
-    _logger.info("Created model with arn: %s", model_response["ModelArn"])
-
-    run_vars = mlflow.projects._get_run_env_vars_from_context()
-    experiment_id = run_vars[_EXPERIMENT_ID_ENV_VAR]
-    run_id = run_vars[_TRACKING_URI_ENV_VAR]
-    job_runner = SagemakerCodeBuildJobRunner(experiment_id, run_id, sagemaker_config, mode=INFERENCE_MODE)
-    job_runner.parse_config()
-    job_runner.setup_code_channel()
-    job_runner.run()
-
-    latest_transform_job = SagemakerSubmittedRun(job_runner, sagemaker_config, experiment_id, run_id, synchronous)
-    if synchronous:
-        _logger.info("Waiting for the deployment operation to complete...")
-        latest_transform_job.wait()
 
 
 def deploy(app_name, model_uri, execution_role_arn=None, bucket=None,
@@ -335,9 +261,9 @@ def deploy(app_name, model_uri, execution_role_arn=None, bucket=None,
 
     if mode not in DEPLOYMENT_MODES:
         raise MlflowException(
-            message="`mode` must be one of: {deployment_modes}".format(
-                deployment_modes=",".join(DEPLOYMENT_MODES)),
-            error_code=INVALID_PARAMETER_VALUE)
+                message="`mode` must be one of: {deployment_modes}".format(
+                    deployment_modes=",".join(DEPLOYMENT_MODES)),
+                error_code=INVALID_PARAMETER_VALUE)
 
     model_path = _download_artifact_from_uri(model_uri)
     model_config_path = os.path.join(model_path, "MLmodel")
@@ -361,16 +287,16 @@ def deploy(app_name, model_uri, execution_role_arn=None, bucket=None,
     endpoint_exists = _find_endpoint(endpoint_name=app_name, sage_client=sage_client) is not None
     if endpoint_exists and mode == DEPLOYMENT_MODE_CREATE:
         raise MlflowException(
-            message=(
-                "You are attempting to deploy an application with name: {application_name} in"
-                " '{mode_create}' mode. However, an application with the same name already"
-                " exists. If you want to update this application, deploy in '{mode_add}' or"
-                " '{mode_replace}' mode.".format(
-                    application_name=app_name,
-                    mode_create=DEPLOYMENT_MODE_CREATE,
-                    mode_add=DEPLOYMENT_MODE_ADD,
-                    mode_replace=DEPLOYMENT_MODE_REPLACE)),
-            error_code=INVALID_PARAMETER_VALUE)
+                message=(
+                    "You are attempting to deploy an application with name: {application_name} in"
+                    " '{mode_create}' mode. However, an application with the same name already"
+                    " exists. If you want to update this application, deploy in '{mode_add}' or"
+                    " '{mode_replace}' mode.".format(
+                        application_name=app_name,
+                        mode_create=DEPLOYMENT_MODE_CREATE,
+                        mode_add=DEPLOYMENT_MODE_ADD,
+                        mode_replace=DEPLOYMENT_MODE_REPLACE)),
+                error_code=INVALID_PARAMETER_VALUE)
 
     model_name = _get_sagemaker_model_name(endpoint_name=app_name)
     if not image_url:
@@ -389,16 +315,16 @@ def deploy(app_name, model_uri, execution_role_arn=None, bucket=None,
 
     if endpoint_exists:
         deployment_operation = _update_sagemaker_endpoint(
-            endpoint_name=app_name, model_name=model_name, model_s3_path=model_s3_path,
-            model_uri=model_uri, image_url=image_url, flavor=flavor,
-            instance_type=instance_type, instance_count=instance_count, vpc_config=vpc_config,
-            mode=mode, role=execution_role_arn, sage_client=sage_client, s3_client=s3_client)
+                endpoint_name=app_name, model_name=model_name, model_s3_path=model_s3_path,
+                model_uri=model_uri, image_url=image_url, flavor=flavor,
+                instance_type=instance_type, instance_count=instance_count, vpc_config=vpc_config,
+                mode=mode, role=execution_role_arn, sage_client=sage_client, s3_client=s3_client)
     else:
         deployment_operation = _create_sagemaker_endpoint(
-            endpoint_name=app_name, model_name=model_name, model_s3_path=model_s3_path,
-            model_uri=model_uri, image_url=image_url, flavor=flavor,
-            instance_type=instance_type, instance_count=instance_count, vpc_config=vpc_config,
-            role=execution_role_arn, sage_client=sage_client)
+                endpoint_name=app_name, model_name=model_name, model_s3_path=model_s3_path,
+                model_uri=model_uri, image_url=image_url, flavor=flavor,
+                instance_type=instance_type, instance_count=instance_count, vpc_config=vpc_config,
+                role=execution_role_arn, sage_client=sage_client)
 
     if synchronous:
         _logger.info("Waiting for the deployment operation to complete...")
@@ -463,7 +389,7 @@ def delete(app_name, region_name="us-west-2", archive=False, synchronous=True, t
                     endpoint_status=endpoint_info["EndpointStatus"]))
         else:
             return _SageMakerOperationStatus.succeeded(
-                "The SageMaker endpoint was deleted successfully.")
+                    "The SageMaker endpoint was deleted successfully.")
 
     def cleanup_fn():
         _logger.info("Cleaning up unused resources...")
@@ -751,7 +677,7 @@ def _create_sagemaker_endpoint(endpoint_name, model_name, model_s3_path, model_u
                 " \"{endpoint_status}\"".format(endpoint_status=endpoint_status))
         elif endpoint_status == "InService":
             return _SageMakerOperationStatus.succeeded(
-                "The SageMaker endpoint was created successfully.")
+                    "The SageMaker endpoint was created successfully.")
         else:
             failure_reason = endpoint_info.get(
                 "FailureReason",
@@ -868,7 +794,7 @@ def _update_sagemaker_endpoint(endpoint_name, model_name, model_uri, image_url, 
             return _SageMakerOperationStatus.failed(failure_reason)
         elif endpoint_info["EndpointStatus"] == "InService":
             return _SageMakerOperationStatus.succeeded(
-                "The SageMaker endpoint was updated successfully.")
+                    "The SageMaker endpoint was updated successfully.")
         else:
             return _SageMakerOperationStatus.in_progress(
                 "The update operation is still in progress. Current endpoint status:"
@@ -954,7 +880,7 @@ def _delete_sagemaker_endpoint_configuration(endpoint_config_name, sage_client):
     :return: ARN of the deleted endpoint configuration.
     """
     endpoint_config_info = sage_client.describe_endpoint_config(
-        EndpointConfigName=endpoint_config_name)
+            EndpointConfigName=endpoint_config_name)
     sage_client.delete_endpoint_config(EndpointConfigName=endpoint_config_name)
     return endpoint_config_info["EndpointConfigArn"]
 
@@ -1028,6 +954,7 @@ class _SageMakerOperation:
 
 
 class _SageMakerOperationStatus:
+
     STATE_SUCCEEDED = "succeeded"
     STATE_FAILED = "failed"
     STATE_IN_PROGRESS = "in progress"
