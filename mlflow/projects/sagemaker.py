@@ -33,6 +33,9 @@ from mlflow.utils.mlflow_tags import (
     MLFLOW_PROJECT_BACKEND,
 )
 
+TRAINING_MODE = 'Training'
+INFERENCE_MODE = 'Inference'
+
 _logger = logging.getLogger(__name__)
 
 
@@ -77,7 +80,13 @@ def train_sagemaker():
     _logger.info('Run ID: %s', run_id)
     _logger.info('Experiment ID: %s', experiment_id)
 
+    try:
+        with open('/opt/ml/input/data/mode/_run_mode', 'r') as f:
+            current_mode = f.read()
+    except FileNotFoundError as fe:
+        current_mode = TRAINING_MODE
     # Setup environment variables
+    os.environ['MLFLOW_MODE'] = current_mode
     os.environ['MLFLOW_S3_ENABLE_ENCRYPTION'] = '1'
     os.environ['MLFLOW_TRACKING_URI'] = tracking_server_uri
     os.environ[tracking._EXPERIMENT_ID_ENV_VAR] = experiment_id
