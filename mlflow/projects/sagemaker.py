@@ -83,7 +83,7 @@ def train_sagemaker():
     try:
         with open('/opt/ml/input/data/mode/_run_mode', 'r') as f:
             current_mode = f.read()
-    except FileNotFoundError as fe:
+    except (FileNotFoundError, IOError):
         current_mode = TRAINING_MODE
     # Setup environment variables
     os.environ['MLFLOW_MODE'] = current_mode
@@ -93,8 +93,12 @@ def train_sagemaker():
     os.environ[tracking._RUN_ID_ENV_VAR] = run_id
 
     set_tracking_uri(tracking_server_uri)
-    run(uri='/opt/ml/code/archive', parameters=hyperparameters, run_id=run_id,
-        experiment_id=experiment_id, ignore_duplicate_params=True)
+    if current_mode == INFERENCE_MODE:
+        run(uri='/opt/ml/code/archive', parameters=hyperparameters, run_id=run_id, entry_point='inference',
+            experiment_id=experiment_id, ignore_duplicate_params=True)
+    else:
+        run(uri='/opt/ml/code/archive', parameters=hyperparameters, run_id=run_id,
+            experiment_id=experiment_id, ignore_duplicate_params=True)
     return
 
 
