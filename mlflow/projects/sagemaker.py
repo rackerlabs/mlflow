@@ -79,6 +79,7 @@ def train_sagemaker():
     del hyperparameters['experiment_id']
     _logger.info('Run ID: %s', run_id)
     _logger.info('Experiment ID: %s', experiment_id)
+    _logger.info('Hyperparameters: %s', hyperparameters)
 
     try:
         with open('/opt/ml/input/data/mode/_run_mode', 'r') as f:

@@ -156,6 +156,7 @@ def _run(
         _logger.info("[%s] Key: %s Value: %s", backend, key, value)
     for key, value in list(final_params.items()) + list(extra_params.items()):
         try:
+            _logger.info("[%s] Merged Key: %s Value: %s", backend, key, value)
             tracking.MlflowClient().log_param(active_run.info.run_id, key, value)
         except mlflow.exceptions.RestException as e:
             if str(e).find('INVALID_PARAMETER_VALUE: Changing param values is not allowed.') > -1 \

@@ -78,8 +78,13 @@ def cli():
               help="If specified, the given run ID will be used instead of creating a new run. "
                    "Note: this argument is used internally by the MLflow project APIs "
                    "and should not be specified.")
+@click.option("--ignore-duplicate-parameters", metavar="MLFLOW_IGNORE_DUPLICATE_PARAMETERS", type=click.BOOL,
+              is_flag=True, default=False, help="If specified, duplicated parameters for existing run id is ignored.")
+@click.option("--enable-s3-encryption", metavar="MLFLOW_S3_ENABLE_ENCRYPTION", type=click.BOOL,
+              is_flag=True, default=False, help="If specified, encrypts all the S3 artifacts that are uploaded "
+                                                "to the S3 artifact store.")
 def run(uri, entry_point, version, param_list, experiment_name, experiment_id, backend,
-        backend_config, no_conda, storage_dir, run_id):
+        backend_config, no_conda, storage_dir, run_id, ignore_duplicate_parameters, enable_s3_encryption):
     """
     Run an MLflow project from the given URI.
 
@@ -118,6 +123,13 @@ def run(uri, entry_point, version, param_list, experiment_name, experiment_id, b
         if backend_config is None:
             eprint("Specify 'backend_config' when using kubernetes mode.")
             sys.exit(1)
+
+    if enable_s3_encryption:
+        os.environ['MLFLOW_S3_ENABLE_ENCRYPTION'] = str(True).lower()
+
+    if ignore_duplicate_parameters and run_id is None:
+        eprint('ignore-duplicate-parameters flag is used when run_id is specified. '
+               'Please re-run the experiment with a existing run-id')
     try:
         projects.run(
             uri,
@@ -131,7 +143,7 @@ def run(uri, entry_point, version, param_list, experiment_name, experiment_id, b
             use_conda=(not no_conda),
             storage_dir=storage_dir,
             synchronous=backend in ("local", "kubernetes", "sagemaker") or backend is None,
-            run_id=run_id
+            run_id=run_id, ignore_duplicate_params=ignore_duplicate_parameters
         )
     except projects.ExecutionException as e:
         _logger.error("=== %s ===", e)
