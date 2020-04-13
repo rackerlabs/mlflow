@@ -80,6 +80,10 @@ def train_sagemaker():
     _logger.info('Run ID: %s', run_id)
     _logger.info('Experiment ID: %s', experiment_id)
     _logger.info('Hyperparameters: %s', hyperparameters)
+    _logger.info('Input Job Config: %s', inputdataconfig)
+    _logger.info('Output Data Config: %s', upstreamoutputdataconfig)
+    _logger.info('Metric: %s', metric)
+    _logger.info('Job Config: %s', trainingjobconfig)
 
     try:
         with open('/opt/ml/input/data/mode/_run_mode', 'r') as f:
@@ -100,6 +104,8 @@ def train_sagemaker():
     else:
         run(uri='/opt/ml/code/archive', parameters=hyperparameters, run_id=run_id,
             experiment_id=experiment_id, ignore_duplicate_params=True)
+    _logger.info('After the run: %s', run_id)
+    os.system('tree -a -L 4 /opt/ml')
     return
 
 
@@ -358,8 +364,10 @@ class SagemakerSubmittedRun(SubmittedRun):
 
     def wait(self):
         sagemaker_session = aws_sm.Session()
-        try:
-            sagemaker_session.logs_for_job(self.training_job_name, wait=self.synchronous, log_type='All')
-        except Exception as e:
-            print('Exception occurred while waiting for sagemaker job', str(e))
+        sagemaker_session.logs_for_job(self.training_job_name, wait=self.synchronous, log_type='All')
+        training_job = sagemaker_session.describe_training_job(job_name=self.training_job_name)
+        job_status = training_job['TrainingJobStatus']
+        if job_status != 'Completed':
+            _logger.error('Job did not complete successfully. Current Status: %s', job_status)
+            raise Exception('Job: %s failed with a status - %s', self.training_job_name, job_status)
         return True
