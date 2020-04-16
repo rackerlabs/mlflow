@@ -13,7 +13,7 @@ DISABLE_ENV_CREATION = "MLFLOW_DISABLE_ENV_CREATION"
 
 _DOCKERFILE_TEMPLATE = """
 # Build an image that can serve mlflow models.
-FROM ubuntu:16.04
+FROM ubuntu:18.04
 
 RUN apt-get -y update && apt-get install -y --no-install-recommends \
          wget \
@@ -30,7 +30,7 @@ RUN apt-get -y update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and setup miniconda
-RUN curl https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh >> miniconda.sh
+RUN curl -L https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh >> miniconda.sh
 RUN bash ./miniconda.sh -b -p /miniconda; rm ./miniconda.sh;
 ENV PATH="/miniconda/bin:$PATH"
 ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
@@ -65,24 +65,23 @@ def _get_mlflow_install_step(dockerfile_context_dir, mlflow_home):
         ).format(mlflow_dir=mlflow_dir)
     else:
         return (
-            # "RUN pip install mlflow=={version}\n"
-            "RUN pip install git+https://github.com/jerrygb/mlflow.git@v1.5.0-sagemaker_add \n"
+            "RUN pip install mlflow-sagemaker=={version}\n"
             "RUN mvn "
             " --batch-mode dependency:copy"
-            " -Dartifact=org.mlflow:mlflow-scoring:{version}:pom"
+            " -Dartifact=org.mlflow:mlflow-scoring:{upstream_version}:pom"
             " -DoutputDirectory=/opt/java\n"
             "RUN mvn "
             " --batch-mode dependency:copy"
-            " -Dartifact=org.mlflow:mlflow-scoring:{version}:jar"
+            " -Dartifact=org.mlflow:mlflow-scoring:{upstream_version}:jar"
             " -DoutputDirectory=/opt/java/jars\n"
-            "RUN cp /opt/java/mlflow-scoring-{version}.pom /opt/java/pom.xml\n"
+            "RUN cp /opt/java/mlflow-scoring-{upstream_version}.pom /opt/java/pom.xml\n"
             "RUN cd /opt/java && mvn "
             "--batch-mode dependency:copy-dependencies -DoutputDirectory=/opt/java/jars\n"
-        ).format(version=mlflow.version.VERSION)
+        ).format(version=mlflow.version.VERSION, upstream_version='1.5.0')
 
 
 def _build_image(
-    image_name, entrypoint, mlflow_home=None, custom_setup_steps_hook=None
+    image_name, entrypoint, mlflow_home=None, custom_setup_steps_hook=None, no_cache=False
 ):
     """
     Build an MLflow Docker image that can be used to serve a
@@ -96,6 +95,7 @@ def _build_image(
     :param custom_setup_steps_hook: (Optional) Single-argument function that takes the string path
            of a dockerfile context directory and returns a string containing Dockerfile commands to
            run during the image build step.
+   :param no_cache: (Optional) Remove cache before building the image.
     """
     mlflow_home = os.path.abspath(mlflow_home) if mlflow_home else None
     with TempDir() as tmp:
@@ -114,8 +114,13 @@ def _build_image(
             )
         _logger.info("Building docker image with name %s", image_name)
         os.system("find {cwd}/".format(cwd=cwd))
+
+        if no_cache:
+            cmd = ["docker", "build", "--no-cache", "-t", image_name, "-f", "Dockerfile", "."]
+        else:
+            cmd = ["docker", "build", "-t", image_name, "-f", "Dockerfile", "."]
         proc = Popen(
-            ["docker", "build", "-t", image_name, "-f", "Dockerfile", "."],
+            cmd,
             cwd=cwd,
             stdout=PIPE,
             stderr=STDOUT,
