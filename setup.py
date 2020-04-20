@@ -43,7 +43,7 @@ setup(
         'gunicorn; platform_system != "Windows"',
         "Flask",
         "numpy",
-        "pandas",
+        "pandas<=0.25.3",
         "python-dateutil",
         "protobuf>=3.6.0",
         "gitpython>=2.1.0",
@@ -56,7 +56,7 @@ setup(
         "sqlalchemy",
         "gorilla",
         "prometheus-flask-exporter",
-        "sagemaker"
+        "sagemaker>=1.50.18"
     ],
     extras_require={
         "extras": [

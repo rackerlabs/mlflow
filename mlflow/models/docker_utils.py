@@ -35,9 +35,9 @@ RUN bash ./miniconda.sh -b -p /miniconda; rm ./miniconda.sh;
 ENV PATH="/miniconda/bin:$PATH"
 ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 ENV GUNICORN_CMD_ARGS="--timeout 60 -k gevent"
+ENV DEFAULT_MLFLOW_PACKAGE="mlflow-sagemaker"
 # Set up the program in the image
 WORKDIR /opt/mlflow
-
 {install_mlflow}
 
 {custom_setup_steps}

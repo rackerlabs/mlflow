@@ -125,9 +125,8 @@ def _install_pyfunc_deps(model_path=None, install_mlflow=False):
     if has_env and install_mlflow:
         mlflow_package = os.environ.get("DEFAULT_MLFLOW_PACKAGE", "mlflow")
         install_mlflow_cmd = [
-            "pip install /opt/mlflow/."
-            if _container_includes_mlflow_source()
-            else "pip install mlflow=={}".format(MLFLOW_VERSION)
+            "pip install /opt/mlflow/." if _container_includes_mlflow_source()
+            else "pip install {}=={}".format(mlflow_package, MLFLOW_VERSION)
         ]
         if (
             Popen(["bash", "-c", " && ".join(activate_cmd + install_mlflow_cmd)]).wait()
