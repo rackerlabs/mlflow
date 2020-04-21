@@ -115,6 +115,8 @@ def commands():
         " asynchronously using the `--async` flag, this value is ignored."
     ),
 )
+@click.option("--env", default=None, multiple=True,
+              help=("Additional environment variables to be setup on SageMaker Model Container."))
 def deploy(
     app_name,
     model_uri,
@@ -130,6 +132,7 @@ def deploy(
     flavor,
     asynchronous,
     timeout,
+    env
 ):
     """
     Deploy model on Sagemaker as a REST API endpoint. Current active AWS account needs to have
@@ -162,6 +165,7 @@ def deploy(
         flavor=flavor,
         synchronous=(not asynchronous),
         timeout_seconds=timeout,
+        env=env
     )
 
 

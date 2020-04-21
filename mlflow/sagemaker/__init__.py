@@ -43,7 +43,7 @@ DEFAULT_BUCKET_NAME_PREFIX = "mlflow-sagemaker"
 
 DEFAULT_SAGEMAKER_INSTANCE_TYPE = "ml.m4.xlarge"
 DEFAULT_SAGEMAKER_INSTANCE_COUNT = 1
-
+INVALID_ENV_VARIABLE_FORMAT = 1001
 _logger = logging.getLogger(__name__)
 
 _full_template = "{account}.dkr.ecr.{region}.amazonaws.com/{image}:{version}"
@@ -139,7 +139,7 @@ def deploy(app_name, model_uri, execution_role_arn=None, bucket=None,
            image_url=None, region_name="us-west-2", mode=DEPLOYMENT_MODE_CREATE, archive=False,
            instance_type=DEFAULT_SAGEMAKER_INSTANCE_TYPE,
            instance_count=DEFAULT_SAGEMAKER_INSTANCE_COUNT, vpc_config=None, flavor=None,
-           synchronous=True, timeout_seconds=1200):
+           synchronous=True, timeout_seconds=1200, env=None):
     """
     Deploy an MLflow model on AWS SageMaker.
     The currently active AWS account must have correct permissions set up.
@@ -250,6 +250,7 @@ def deploy(app_name, model_uri, execution_role_arn=None, bucket=None,
                             responsible for monitoring the health and status of the pending
                             deployment using native SageMaker APIs or the AWS console. If
                             ``synchronous`` is ``False``, this parameter is ignored.
+    :param env: If specified append the environment variables to the create_endpoint_config API call
     """
     import boto3
     if (not archive) and (not synchronous):
@@ -318,13 +319,13 @@ def deploy(app_name, model_uri, execution_role_arn=None, bucket=None,
                 endpoint_name=app_name, model_name=model_name, model_s3_path=model_s3_path,
                 model_uri=model_uri, image_url=image_url, flavor=flavor,
                 instance_type=instance_type, instance_count=instance_count, vpc_config=vpc_config,
-                mode=mode, role=execution_role_arn, sage_client=sage_client, s3_client=s3_client)
+                mode=mode, role=execution_role_arn, sage_client=sage_client, s3_client=s3_client, env=env)
     else:
         deployment_operation = _create_sagemaker_endpoint(
                 endpoint_name=app_name, model_name=model_name, model_s3_path=model_s3_path,
                 model_uri=model_uri, image_url=image_url, flavor=flavor,
                 instance_type=instance_type, instance_count=instance_count, vpc_config=vpc_config,
-                role=execution_role_arn, sage_client=sage_client)
+                role=execution_role_arn, sage_client=sage_client, env=env)
 
     if synchronous:
         _logger.info("Waiting for the deployment operation to complete...")
@@ -608,7 +609,7 @@ def _get_sagemaker_config_name(endpoint_name):
 
 def _create_sagemaker_endpoint(endpoint_name, model_name, model_s3_path, model_uri, image_url,
                                flavor, instance_type, vpc_config, instance_count, role,
-                               sage_client):
+                               sage_client, env):
     """
     :param endpoint_name: The name of the SageMaker endpoint to create.
     :param model_name: The name to assign the new SageMaker model that will be associated with the
@@ -623,6 +624,7 @@ def _create_sagemaker_endpoint(endpoint_name, model_name, model_s3_path, model_u
                        new SageMaker model associated with this SageMaker endpoint.
     :param role: SageMaker execution ARN role.
     :param sage_client: A boto3 client for SageMaker.
+    :param env: Setup environment variable for sagemaker container.
     """
     _logger.info("Creating new endpoint with name: %s ...", endpoint_name)
 
@@ -633,7 +635,8 @@ def _create_sagemaker_endpoint(endpoint_name, model_name, model_s3_path, model_u
                                              vpc_config=vpc_config,
                                              image_url=image_url,
                                              execution_role=role,
-                                             sage_client=sage_client)
+                                             sage_client=sage_client,
+                                             env=env)
     _logger.info("Created model with arn: %s", model_response["ModelArn"])
 
     production_variant = {
@@ -693,7 +696,7 @@ def _create_sagemaker_endpoint(endpoint_name, model_name, model_s3_path, model_u
 
 def _update_sagemaker_endpoint(endpoint_name, model_name, model_uri, image_url, model_s3_path,
                                flavor, instance_type, instance_count, vpc_config, mode, role,
-                               sage_client, s3_client):
+                               sage_client, s3_client, env):
     """
     :param endpoint_name: The name of the SageMaker endpoint to update.
     :param model_name: The name to assign the new SageMaker model that will be associated with the
@@ -711,6 +714,7 @@ def _update_sagemaker_endpoint(endpoint_name, model_name, model_uri, image_url, 
     :param role: SageMaker execution ARN role.
     :param sage_client: A boto3 client for SageMaker.
     :param s3_client: A boto3 client for S3.
+    :param env: Setup environment variable for sagemaker container.
     """
     if mode not in [DEPLOYMENT_MODE_ADD, DEPLOYMENT_MODE_REPLACE]:
         msg = "Invalid mode `{md}` for deployment to a pre-existing application".format(
@@ -734,7 +738,8 @@ def _update_sagemaker_endpoint(endpoint_name, model_name, model_uri, image_url, 
                                                  vpc_config=vpc_config,
                                                  image_url=image_url,
                                                  execution_role=role,
-                                                 sage_client=sage_client)
+                                                 sage_client=sage_client,
+                                                 env=env)
     _logger.info("Created new model with arn: %s", new_model_response["ModelArn"])
 
     if mode == DEPLOYMENT_MODE_ADD:
@@ -817,7 +822,7 @@ def _update_sagemaker_endpoint(endpoint_name, model_name, model_uri, image_url, 
 
 
 def _create_sagemaker_model(model_name, model_s3_path, model_uri, flavor, vpc_config, image_url,
-                            execution_role, sage_client):
+                            execution_role, sage_client, env):
     """
     :param model_name: The name to assign the new SageMaker model that is created.
     :param model_s3_path: S3 path where the model artifacts are stored.
@@ -829,15 +834,30 @@ def _create_sagemaker_model(model_name, model_s3_path, model_uri, flavor, vpc_co
                       model's container,
     :param execution_role: The ARN of the role that SageMaker will assume when creating the model.
     :param sage_client: A boto3 client for SageMaker.
+    :param env: Setup environment variable for sagemaker container.
     :return: AWS response containing metadata associated with the new model.
     """
+    env_list = _get_deployment_config(flavor_name=flavor)
+
+    if env is not None:
+        for e in env:
+            if len(e.split('=')) < 2:
+                _logger.error('Invalid environment variable %s. Ensure environment variables are the specified in the'
+                              'format - VARIABLE_NAME=VALUE.', e)
+                raise MlflowException(
+                    message=(
+                        "Invalid environment variable. Ensure environment variables are the specified in "
+                        "the format - VARIABLE_NAME=VALUE."),
+                    error_code=INVALID_ENV_VARIABLE_FORMAT)
+            env_list[e.split('=')[0]] = ' '.join(e.split('=')[1:]).strip('"')
+
     create_model_args = {
         "ModelName": model_name,
         "PrimaryContainer": {
             'ContainerHostname': 'mfs-%s' % model_name,
             'Image': image_url,
             'ModelDataUrl': model_s3_path,
-            'Environment': _get_deployment_config(flavor_name=flavor),
+            'Environment': env_list,
         },
         "ExecutionRoleArn": execution_role,
         "Tags": [{'Key': 'model_uri', 'Value': str(model_uri)}],
