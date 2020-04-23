@@ -83,8 +83,17 @@ def cli():
 @click.option("--enable-s3-encryption", metavar="MLFLOW_S3_ENABLE_ENCRYPTION", type=click.BOOL,
               is_flag=True, default=False, help="If specified, encrypts all the S3 artifacts that are uploaded "
                                                 "to the S3 artifact store.")
+@click.option("--environment-config", metavar="ENVIRONMENT_CONFIG",
+              help="If specified, it is used for EMR backend to setup environment variables.")
+@click.option(
+    "--mode",
+    type=click.Choice(['Training', 'Inference'], case_sensitive=False),
+    default='Training',
+    help="Select the mode into you want run the sagemaker backend.",
+)
 def run(uri, entry_point, version, param_list, experiment_name, experiment_id, backend,
-        backend_config, no_conda, storage_dir, run_id, ignore_duplicate_parameters, enable_s3_encryption):
+        backend_config, no_conda, storage_dir, run_id, ignore_duplicate_parameters, enable_s3_encryption, mode,
+        environment_config):
     """
     Run an MLflow project from the given URI.
 
@@ -143,7 +152,8 @@ def run(uri, entry_point, version, param_list, experiment_name, experiment_id, b
             use_conda=(not no_conda),
             storage_dir=storage_dir,
             synchronous=backend in ("local", "kubernetes", "sagemaker") or backend is None,
-            run_id=run_id, ignore_duplicate_params=ignore_duplicate_parameters
+            run_id=run_id, ignore_duplicate_params=ignore_duplicate_parameters,
+            mode=mode, environment_config=environment_config
         )
     except projects.ExecutionException as e:
         _logger.error("=== %s ===", e)

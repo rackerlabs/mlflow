@@ -33,8 +33,8 @@ from mlflow.utils.mlflow_tags import (
     MLFLOW_PROJECT_BACKEND,
 )
 
-TRAINING_MODE = 'Training'
-INFERENCE_MODE = 'Inference'
+TRAINING_MODE = 'training'
+INFERENCE_MODE = 'inference'
 
 _logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def train_sagemaker():
 
     try:
         with open('/opt/ml/input/data/mode/_run_mode', 'r') as f:
-            current_mode = f.read()
+            current_mode = f.read().lower()
     except (FileNotFoundError, IOError):
         current_mode = TRAINING_MODE
     # Setup environment variables
@@ -99,22 +99,22 @@ def train_sagemaker():
 
     set_tracking_uri(tracking_server_uri)
     if current_mode == INFERENCE_MODE:
-        run(uri='/opt/ml/code/archive', parameters=hyperparameters, run_id=run_id, entry_point='inference',
-            experiment_id=experiment_id, ignore_duplicate_params=True)
+        run(uri='/opt/ml/code/src', parameters=hyperparameters, run_id=run_id, entry_point=current_mode,
+            experiment_id=experiment_id, ignore_duplicate_params=True, mode=current_mode)
     else:
-        run(uri='/opt/ml/code/archive', parameters=hyperparameters, run_id=run_id,
-            experiment_id=experiment_id, ignore_duplicate_params=True)
+        run(uri='/opt/ml/code/src', parameters=hyperparameters, run_id=run_id,
+            experiment_id=experiment_id, ignore_duplicate_params=True, mode=current_mode)
     _logger.info('After the run: %s', run_id)
     os.system('tree -a -L 4 /opt/ml')
     return
 
 
-def _compress_upload_project_to_s3(work_dir, bucket_name, prefix):
+def create_code_channel(work_dir, bucket_name, prefix):
     client = boto3.client('s3')
     transfer = boto3.s3.transfer.S3Transfer(client=client)
-    s3_source_code_key = '{}//sourcedir.tar.gz'.format(prefix)
+    s3_source_code_key = '{}/sourcedir.tar.gz'.format(prefix)
     target_archive_path = os.path.join(os.getcwd(), 'sourcedir.tar.gz')
-    _create_code_archive(work_dir, target_archive_path, 'model')
+    _create_code_archive(work_dir, target_archive_path)
     transfer.upload_file(filename=target_archive_path,
                          bucket=bucket_name, key=s3_source_code_key,
                          extra_args={'ServerSideEncryption': 'AES256'})
@@ -128,41 +128,42 @@ def _compress_upload_project_to_s3(work_dir, bucket_name, prefix):
             }
         }
     }
+    _logger.info('Uploaded the source code to %s', 's3://{}/{}'.format(bucket_name, s3_source_code_key))
     return code_channel_config
 
 
-def _compress_upload_project_to_s3_codebuild(work_dir, pipeline_bucket, canonical_name, codebuild_stage,
-                                             codebuild_no, commit_id_short):
-    client = boto3.client('s3')
-    transfer = boto3.s3.transfer.S3Transfer(client=client)
-    s3_source_code_key = '{}/{}/{}-{}/sourcedir.tar.gz'.format(canonical_name, codebuild_stage,
-                                                               codebuild_no, commit_id_short)
-    target_archive_path = os.path.join(os.getcwd(), 'sourcedir.tar.gz')
-    _create_code_archive(work_dir, target_archive_path, canonical_name)
-    transfer.upload_file(filename=target_archive_path,
-                         bucket=pipeline_bucket, key=s3_source_code_key,
-                         extra_args={'ServerSideEncryption': 'AES256'})
-    code_channel_config = {
-        "ChannelName": "code",
-        "DataSource": {
-            "S3DataSource": {
-                "S3DataType": "S3Prefix",
-                "S3Uri": 's3://{}/{}'.format(pipeline_bucket, s3_source_code_key),
-                "S3DataDistributionType": "FullyReplicated"
-            }
-        }
-    }
-    return code_channel_config
+# def create_code_channel_codebuild(work_dir, pipeline_bucket, canonical_name, codebuild_stage,
+#                                   codebuild_no, commit_id_short):
+#     client = boto3.client('s3')
+#     transfer = boto3.s3.transfer.S3Transfer(client=client)
+#     s3_source_code_key = '{}/{}/{}-{}/sourcedir.tar.gz'.format(canonical_name, codebuild_stage,
+#                                                                codebuild_no, commit_id_short)
+#     target_archive_path = os.path.join(os.getcwd(), 'sourcedir.tar.gz')
+#     _create_code_archive(work_dir, target_archive_path, canonical_name)
+#     transfer.upload_file(filename=target_archive_path,
+#                          bucket=pipeline_bucket, key=s3_source_code_key,
+#                          extra_args={'ServerSideEncryption': 'AES256'})
+#     code_channel_config = {
+#         "ChannelName": "code",
+#         "DataSource": {
+#             "S3DataSource": {
+#                 "S3DataType": "S3Prefix",
+#                 "S3Uri": 's3://{}/{}'.format(pipeline_bucket, s3_source_code_key),
+#                 "S3DataDistributionType": "FullyReplicated"
+#             }
+#         }
+#     }
+#     return code_channel_config
 
 
-def _create_code_archive(work_dir, result_path, model_name):
+def _create_code_archive(work_dir, result_path):
     """
     Creates build context tarfile containing Dockerfile and project code, returning path to tarfile
     """
     directory = tempfile.mkdtemp()
     try:
         contents = "mlflow-project-contents"
-        archive = "archive".format(model_name)
+        archive = "src"
         dst_path = os.path.join(directory, contents)
         _logger.info('Copying files %s', dst_path)
         shutil.copytree(src=work_dir, dst=dst_path)
@@ -199,13 +200,14 @@ def _make_tarfile(output_filename, source_dir, archive_name, custom_filter=None)
 
 
 # def run_sagemaker_training_job(uri, work_dir, experiment_id, run_id, sagemaker_config):
-def run_sagemaker_training_job(sagemaker_config, uri, experiment_id, run_id, work_dir, project, synchronous):
-    job_runner = SagemakerCodeBuildJobRunner(experiment_id, run_id, sagemaker_config, uri, work_dir, project)
+def run_sagemaker_training_job(sagemaker_config, uri=None, experiment_id=None, run_id=None, work_dir=None, project=None, synchronous=None,
+                               mode='training'):
+    job_runner = SagemakerCodeBuildJobRunner(experiment_id, run_id, sagemaker_config, uri, work_dir, project, mode)
     job_runner.setup_tags()
-    job_runner.setup_code_channel()
+    job_runner.setup_channels()
     job_runner.run()
 
-    return SagemakerSubmittedRun(sagemaker_config, experiment_id, run_id, uri, work_dir, project, synchronous)
+    return SagemakerSubmittedRun(sagemaker_config, experiment_id, run_id, uri, work_dir, project, synchronous, mode)
     # env_vars = {
     #     tracking._TRACKING_URI_ENV_VAR: tracking_uri,
     #     tracking._EXPERIMENT_ID_ENV_VAR: experiment_id,
@@ -223,12 +225,13 @@ def _parse_s3_uri(uri):
 
 
 class SagemakerRunner(object):
-    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir, project):
+    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir, project, mode):
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri
         self._work_dir = work_dir
         self._project = project
+        self._mode = mode
         self.sagemaker_config = sagemaker_config
         self.training_job_name = sagemaker_config[TRAINING_JOB_NAME]
 
@@ -277,21 +280,46 @@ class SagemakerRunner(object):
                 self._mlflow_run_id, key, value
             )
 
-    def setup_code_channel(self):
+    def setup_channels(self, run_mode_filename='_run_mode'):
         store = _get_store()
         artifact_uri = store.get_run(self._mlflow_run_id).info.artifact_uri
         bucket_name, prefix = _parse_s3_uri(artifact_uri)
-        code_channel_config = _compress_upload_project_to_s3(self._work_dir, bucket_name, prefix)
+
+        code_channel_config = create_code_channel(self._work_dir, bucket_name, prefix)
         self.sagemaker_config["InputDataConfig"].append(code_channel_config)
+
+        mode_channel_config = self.create_mode_channel(bucket_name, prefix, run_mode_filename)
+        self.sagemaker_config["InputDataConfig"].append(mode_channel_config)
+
+    def create_mode_channel(self, bucket_name, prefix, run_mode_filename):
+        client = boto3.client('s3')
+        transfer = boto3.s3.transfer.S3Transfer(client=client)
+        with open(run_mode_filename, 'w') as run_mode_file:
+            run_mode_file.write(self._mode)
+        transfer.upload_file(filename=run_mode_filename,
+                             bucket=bucket_name, key='{prefix}/{filename}'
+                             .format(prefix=prefix, filename=run_mode_filename),
+                             extra_args={'ServerSideEncryption': 'AES256'})
+        mode_channel = {
+            "ChannelName": "mode",
+            "DataSource": {
+                "S3DataSource": {
+                    "S3Uri": "s3://{bucket}/{prefix}/".format(bucket=bucket_name, prefix=prefix),
+                    "S3DataDistributionType": "FullyReplicated",
+                    "S3DataType": "S3Prefix"
+                }
+            }
+        }
+        return mode_channel
 
 
 class SagemakerCodeBuildJobRunner(SagemakerRunner):
 
     def setup_tags(self):
         super(SagemakerCodeBuildJobRunner, self).setup_tags()
-        self._set_up_codebuild_tags()
+        self._fetch_codebuild_tags()
 
-    def _set_up_codebuild_tags(self):
+    def _fetch_codebuild_tags(self):
         self._pipeline_bucket = self.sagemaker_config[S3_BUCKET_NAME]
         self._codebuild_stage = self.sagemaker_config[CODEBUILD_STAGE]
         self._codebuild_no = self.sagemaker_config[CODEBUILD_NO]
@@ -329,12 +357,14 @@ class SagemakerCodeBuildJobRunner(SagemakerRunner):
             )
             del self.sagemaker_config[name]
 
-    def setup_code_channel(self):
-        code_channel_config = _compress_upload_project_to_s3_codebuild(self._work_dir, self._pipeline_bucket,
-                                                                       self._canonical_name,
-                                                                       self._codebuild_stage,
-                                                                       self._codebuild_no, self._commit_id_short)
+    def setup_channels(self, run_mode_filename='_run_mode'):
+        prefix = '{}/{}/{}-{}'.format(self._canonical_name, self._codebuild_stage,
+                                      self._codebuild_no, self._commit_id_short)
+        code_channel_config = create_code_channel(self._work_dir, self._pipeline_bucket, prefix)
         self.sagemaker_config["InputDataConfig"].append(code_channel_config)
+
+        mode_channel_config = self.create_mode_channel(self._pipeline_bucket, prefix, run_mode_filename)
+        self.sagemaker_config["InputDataConfig"].append(mode_channel_config)
 
 
 class SagemakerSubmittedRun(SubmittedRun):
@@ -346,7 +376,7 @@ class SagemakerSubmittedRun(SubmittedRun):
     :param job_namespace: Sagemaker job namespace.
     """
 
-    def __init__(self, sagemaker_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous):
+    def __init__(self, sagemaker_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous, mode):
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri
@@ -355,6 +385,7 @@ class SagemakerSubmittedRun(SubmittedRun):
         self.sagemaker_config = sagemaker_config
         self.synchronous = synchronous
         self.training_job_name = sagemaker_config[TRAINING_JOB_NAME]
+        self.mode = 'Training' if mode.lower() == 'training' else 'Inference'
 
         super(SagemakerSubmittedRun, self).__init__()
 
@@ -368,6 +399,6 @@ class SagemakerSubmittedRun(SubmittedRun):
         training_job = sagemaker_session.describe_training_job(job_name=self.training_job_name)
         job_status = training_job['TrainingJobStatus']
         if job_status != 'Completed':
-            _logger.error('Job did not complete successfully. Current Status: %s', job_status)
-            raise Exception('Job: %s failed with a status - %s', self.training_job_name, job_status)
+            _logger.error('%s Job did not complete successfully. Current Status: %s', self.mode, job_status)
+            raise Exception('%s Job: %s failed with a status - %s', self.mode, self.training_job_name, job_status)
         return True

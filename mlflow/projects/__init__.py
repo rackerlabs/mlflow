@@ -127,7 +127,9 @@ def _run(
         storage_dir=None,
         synchronous=True,
         run_id=None,
-        ignore_duplicate_params=False
+        ignore_duplicate_params=False,
+        mode=None,
+        environment_config=None
 ):
     """
     Helper that delegates to the project-running method corresponding to the passed-in backend.
@@ -294,7 +296,7 @@ def _run(
         del sagemaker_config[MODEL_SRC_DIR]
         submitted_run = sm.run_sagemaker_training_job(sagemaker_config, uri, active_run.info.experiment_id,
                                                       active_run.info.run_id, work_dir, project,
-                                                      synchronous=synchronous)
+                                                      synchronous=synchronous, mode=mode)
 
         with open(os.path.join(model_source_dir, 'RUN_ID'), 'w') as f:
             f.write(active_run.info.run_id)
@@ -310,8 +312,34 @@ def _run(
                                                          active_run.info.run_id))
 
         return submitted_run
+    elif backend == "emr":
+        from mlflow.projects import emr as emr
+        emr_config = _parse_emr_config(backend_config, mode)
 
-    supported_backends = ["local", "databricks", "kubernetes", "sagemaker"]
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_ENV, "conda"
+        )
+        tracking.MlflowClient().set_tag(
+            active_run.info.run_id, MLFLOW_PROJECT_BACKEND, "emr"
+        )
+        model_source_dir = emr_config[MODEL_SRC_DIR]
+        submitted_run = emr.run_emr_training_job(emr_config, uri, active_run.info.experiment_id,
+                                                 active_run.info.run_id, work_dir, project,
+                                                 synchronous=synchronous, environment_config=environment_config)
+
+        with open(os.path.join(model_source_dir, 'RUN_ID'), 'w') as f:
+            f.write(active_run.info.run_id)
+
+        with open(os.path.join(model_source_dir, 'EXPERIMENT_ID'), 'w') as f:
+            f.write(active_run.info.experiment_id)
+
+        with open(os.path.join(model_source_dir, 'TRACKING_URL'), 'w') as f:
+            f.write(mlflow.get_tracking_uri())
+
+        with open(os.path.join(model_source_dir, 'RUN_ID_URL'), 'w') as f:
+            f.write('{}/#/experiments/{}/runs/{}'.format(mlflow.get_tracking_uri(), active_run.info.experiment_id,
+                                                         active_run.info.run_id))
+    supported_backends = ["local", "databricks", "kubernetes", "sagemaker", "emr"]
     raise ExecutionException(
         "Got unsupported execution mode %s. Supported "
         "values: %s" % (backend, supported_backends)
@@ -331,7 +359,9 @@ def run(
         storage_dir=None,
         synchronous=True,
         run_id=None,
-        ignore_duplicate_params=False
+        ignore_duplicate_params=False,
+        mode=None,
+        environment_config=None
 ):
     """
     Run an MLflow project. The project can be local or stored at a Git URI.
@@ -405,6 +435,21 @@ def run(
             mlflow.get_tracking_uri(), backend_config
         )
 
+    if backend == "emr":
+        if environment_config is None:
+            _logger.error(
+                "Error when attempting to setup backend for EMR. Environment config is required. Please see help for "
+                "details."
+            )
+            raise
+        if environment_config:
+            try:
+                with open(environment_config, 'r') as f:
+                    pass
+            except (FileNotFoundError, IOError) as e:
+                _logger.error(
+                    "Error when attempting to load environment config backend for EMR."
+                )
     experiment_id = _resolve_experiment_id(
         experiment_name=experiment_name, experiment_id=experiment_id
     )
@@ -421,7 +466,9 @@ def run(
         storage_dir=storage_dir,
         synchronous=synchronous,
         run_id=run_id,
-        ignore_duplicate_params=ignore_duplicate_params
+        ignore_duplicate_params=ignore_duplicate_params,
+        mode=mode,
+        environment_config=environment_config
     )
     if synchronous:
         _wait_for(submitted_run_obj, backend)
@@ -936,6 +983,83 @@ def _parse_kubernetes_config(backend_config):
     if "repository-uri" not in backend_config.keys():
         raise ExecutionException("Could not find 'repository-uri' in backend_config.")
     return kube_config
+
+
+def _parse_emr_config(backend_config, mode=None):
+    # Defaults for EMR training job submission.
+    default_emr_config = {
+        "ReleaseLabel": "emr-5.29.0",
+        "ResourceConfig": {
+            "InstanceGroups": [
+                {
+                    "Name": "EmrMaster",
+                    "Market": "SPOT",
+                    "BidPriceAsPercentageOfOnDemandPrice": 70,
+                    "InstanceType": "m3.xlarge",
+                    "InstanceCount": 1
+                },
+                {
+                    "Name": "EmrCore",
+                    "Market": "SPOT",
+                    "BidPriceAsPercentageOfOnDemandPrice": 70,
+                    "InstanceType": "m3.xlarge",
+                    "InstanceCount": 2
+                }
+            ],
+        "VisibleToAllUsers": True,
+        "Applications": [{'Name': 'Hadoop'}, {'Name': 'Spark'}],
+        "JobFlowRole": "EMR_EC2_DefaultRole",
+        "ServiceRole": "EMR_DefaultRole",
+        "TerminationProtected": False,
+        "KeepJobFlowAliveWhenNoSteps": False
+        },
+    }
+
+    if not backend_config:
+        raise ExecutionException("Backend_config file not found.")
+
+    # Merge with defaults, this will overwrite any defaults with submitted config.
+    emr_config = {**default_emr_config, **backend_config}
+
+    if "ClusterName" not in emr_config.keys():
+        raise ExecutionException("Could not find ClusterName in backend_config.")
+
+    if "Ec2InstanceAttributes" not in emr_config.keys():
+        raise ExecutionException(
+            "Could not find Ec2InstanceAttributes in backend_config."
+        )
+
+    if "Input" not in emr_config.keys():
+        raise ExecutionException(
+            "Could not find Input in backend_config."
+        )
+
+    if "BootstrapActions" not in emr_config.keys():
+        raise ExecutionException(
+            "Could not find BootstrapActions in backend_config."
+        )
+
+    if mode.lower() == 'inference':
+        if "Output" not in emr_config.keys():
+            raise ExecutionException(
+                "Could not find Output in backend_config."
+            )
+
+    if "Ec2SubnetId" not in emr_config['Ec2InstanceAttributes'].keys():
+        raise ExecutionException("Could not find Ec2SubnetId in backend_config.")
+
+    if "EmrManagedMasterSecurityGroup" not in emr_config['Ec2InstanceAttributes'].keys():
+        raise ExecutionException("Could not find EmrManagedMasterSecurityGroup in backend_config.")
+
+    if "EmrManagedSlaveSecurityGroup" not in emr_config['Ec2InstanceAttributes'].keys():
+        raise ExecutionException("Could not find EmrManagedSlaveSecurityGroup in backend_config.")
+
+    if not emr_config.get('LogUri'):
+        emr_config["LogUri"] = "s3://{}/emr_logs/{}".format(backend_config['S3BucketName'], emr_config["ClusterName"])
+
+    if not emr_config["VisibleToAllUsers"]:
+        emr_config["VisibleToAllUsers"] = True
+    return emr_config
 
 
 def _parse_sagemaker_config(backend_config):
