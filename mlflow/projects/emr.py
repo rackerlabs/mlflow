@@ -69,6 +69,7 @@ _EMR_BOOTSTRAP_SETUP_TEMPLATE = "#!/usr/bin/env bash"
 ""
 "aws s3 cp {source_location} source_dir.tgz"
 "aws s3 cp {environment_config_location} var.env"
+"{input_tasks}"
 "source var.env"
 "mkdir -p ~/mlflow-code"
 "tar xvf source_dir.tgz -C ~/mlflow-code"
@@ -149,6 +150,7 @@ _TIMEOUT_SCRIPT = "#!/bin/sh"\
 _MLFLOW_RUN_SCRIPT = "#!/usr/bin/env bash"
 "aws s3 cp {environment_config_location} var.env"
 "mlflow run --ignore-duplicate-parameters ~/mlflow-code/ $MLFLOW_PARSED_PARAMETER"
+"{output_tasks}"
 
 
 def train_emr():

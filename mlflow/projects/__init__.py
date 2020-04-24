@@ -1024,11 +1024,6 @@ def _parse_emr_config(backend_config, mode=None):
     if "ClusterName" not in emr_config.keys():
         raise ExecutionException("Could not find ClusterName in backend_config.")
 
-    if "Ec2InstanceAttributes" not in emr_config.keys():
-        raise ExecutionException(
-            "Could not find Ec2InstanceAttributes in backend_config."
-        )
-
     if "Input" not in emr_config.keys():
         raise ExecutionException(
             "Could not find Input in backend_config."
@@ -1045,13 +1040,13 @@ def _parse_emr_config(backend_config, mode=None):
                 "Could not find Output in backend_config."
             )
 
-    if "Ec2SubnetId" not in emr_config['Ec2InstanceAttributes'].keys():
+    if "Ec2SubnetId" not in emr_config['ResourceConfig'].keys():
         raise ExecutionException("Could not find Ec2SubnetId in backend_config.")
 
-    if "EmrManagedMasterSecurityGroup" not in emr_config['Ec2InstanceAttributes'].keys():
+    if "EmrManagedMasterSecurityGroup" not in emr_config['ResourceConfig'].keys():
         raise ExecutionException("Could not find EmrManagedMasterSecurityGroup in backend_config.")
 
-    if "EmrManagedSlaveSecurityGroup" not in emr_config['Ec2InstanceAttributes'].keys():
+    if "EmrManagedSlaveSecurityGroup" not in emr_config['ResourceConfig'].keys():
         raise ExecutionException("Could not find EmrManagedSlaveSecurityGroup in backend_config.")
 
     if not emr_config.get('LogUri'):
