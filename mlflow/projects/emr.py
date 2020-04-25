@@ -19,6 +19,7 @@ from mlflow.exceptions import ExecutionException, MlflowException
 from mlflow.projects.submitted_run import SubmittedRun
 from mlflow.entities import RunStatus
 from mlflow import get_tracking_uri
+from botocore.exceptions import ClientError
 from mlflow.utils.codebuild_tags import S3_BUCKET_NAME, CODEBUILD_STAGE, CODEBUILD_NO, MODEL_COMMIT, \
     CANONICAL_MODEL_NAME, GIT_REPO_NAME, GIT_REPO_URL, CODEBUILD_URL, CLUSTER_NAME, MODE, \
     TRAINING_JOB_NAME, CODEBUILD_INHERENT_NAMES
@@ -35,45 +36,50 @@ from mlflow.utils.mlflow_tags import (
     MLFLOW_PROJECT_BACKEND,
 )
 
-TIMEOUT_SCRIPT = "terminate_script.sh"
-
+TIMEOUT_SCRIPT = "timeout.sh"
+SOURCE_ROOT_DIR = "/mnt/mlflow-code/"  # Directory where the source is setup.
+SOURCE_ARCHIVE_NAME = "src"  # default name of the archive
 SETUP_SCRIPT = "setup.sh"
 RUN_SCRIPT = "run.sh"
-
+EMR_CHECK_INTERVAL = 60  # seconds
 TRAINING_MODE = 'Training'
 INFERENCE_MODE = 'Inference'
 
 _logger = logging.getLogger(__name__)
 
-_EMR_BOOTSTRAP_SETUP_TEMPLATE = "#!/usr/bin/env bash"
-"pre_reqs() {"
-"    echo \"Installing Pre-requisites\""
-"    sudo /usr/bin/easy_install-3.6 pip"
-"    sudo /usr/local/bin/pip3 install --ignore-installed configparser==3.5.0 # ll /usr/lib/python2.7/dist-packages/backports/"
-"    sudo /usr/local/bin/pip3 install mlflow python-dateutil==2.5.0 pyarrow ipython sklearn tensorflow keras"
-"    sudo /usr/local/bin/pip3 install python-dateutil --upgrade"
-"    sudo sed -i -e '$a\export PYSPARK_PYTHON=/usr/bin/python3' /etc/spark/conf/spark-env.sh"
-""
-"    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh"
-"    bash ~/miniconda.sh -b -p $HOME/miniconda"
-"    sudo yum install git -y"
-"    echo -e \"alias python=python3\nalias ll=\\\"ls -alF\\\"\n\" >> /home/hadoop/.bashrc"
-"    echo -e \"alias python=python3\nalias ll=\\\"ls -alF\\\"\nexport PATH=\\\"\$PATH:/usr/local/bin/\\\" | sudo tee -a /root/.bashrc"
-"    eval \"$(/home/hadoop/miniconda/bin/conda shell.bash hook)\""
-"    conda init"
-"}"
-"export MLFLOW_VERSION={mlflow_version}"
-"export PATH=\"$PATH:/usr/local/bin/\""
-""
-"pre_reqs"
-""
-"aws s3 cp {source_location} source_dir.tgz"
-"aws s3 cp {environment_config_location} var.env"
-"source var.env"
-"mkdir -p ~/mlflow-code"
-"tar xvf source_dir.tgz -C ~/mlflow-code"
-"cd ~/mlflow-code"
-"conda create -f ~/mlflow-code/conda.yaml -n $MLFLOW_CONDA_ENV_NAME"
+_EMR_BOOTSTRAP_SETUP_TEMPLATE = """#!/bin/bash
+pre_reqs() {{
+    echo "Installing Pre-requisites"
+    sudo /usr/bin/easy_install-3.6 pip
+    sudo /usr/local/bin/pip3 install pip --upgrade
+    sudo /usr/local/bin/pip3 install --ignore-installed configparser==3.5.0 # ll /usr/lib/python2.7/dist-packages/backports/
+    sudo /usr/local/bin/pip3 install python-dateutil==2.5.0 pyarrow ipython sklearn tensorflow keras
+    sudo /usr/local/bin/pip3 install git+https://github.com/jerrygb/mlflow.git@modelfactory
+    sudo /usr/local/bin/pip3 install python-dateutil --upgrade
+    sudo sed -i -e '$a\export PYSPARK_PYTHON=/usr/bin/python3' /etc/spark/conf/spark-env.sh
+
+    wget -L https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
+    bash ~/miniconda.sh -b -p /mnt/miniconda
+    sudo yum install git -y
+    echo -e "alias python=python3\\nalias ll=\\\"ls -alF\\\"\\n" >> /home/hadoop/.bashrc
+    echo -e "alias python=python3\\nalias ll=\\\"ls -alF\\\"\\nexport PATH=\\\"\$PATH:/usr/local/bin/\\\"" | sudo tee -a /root/.bashrc
+    eval "$(/mnt/miniconda/bin/conda shell.bash hook)"
+    conda init
+}}
+export MLFLOW_VERSION={mlflow_version}
+export PATH="$PATH:/usr/local/bin/"
+
+pre_reqs
+aws s3 cp {source_location} source_dir.tgz
+aws s3 cp {environment_config_location} var.env
+chmod +x var.env
+source var.env
+echo "Current Directory $(pwd)"
+env
+mkdir -p {source_root_dir}
+tar --warning=no-timestamp -xvf source_dir.tgz -C {source_root_dir}
+cd {source_directory}
+conda env create -f conda.yaml -n $MLFLOW_CONDA_ENV_NAME"""
 
 # Copyright 2013 Lyft
 # Copyright 2014 Alex Konradi
@@ -103,54 +109,63 @@ _EMR_BOOTSTRAP_SETUP_TEMPLATE = "#!/usr/bin/env bash"
 
 # By default, we allow an idle time of 15 minutes, and shut down within
 # the last 5 minutes of the hour.
-_TIMEOUT_SCRIPT = "#!/bin/sh" \
-                  "MAX_SECS_IDLE={max_secs_idle}"
-"if [ -z \"$MAX_SECS_IDLE\" ]; then MAX_SECS_IDLE=1800; fi"
-""
-"MIN_SECS_TO_END_OF_HOUR={min_secs_to_end_of_hour}"
-"if [ -z \"$MIN_SECS_TO_END_OF_HOUR\" ]; then MIN_SECS_TO_END_OF_HOUR=300; fi"
-""
-""
-"("
-"while true  # the only way out is to SHUT DOWN THE MACHINE"
-"do"
-"    # get the uptime as an integer (expr can't handle decimals)"
-"    UPTIME=$(cat /proc/uptime | cut -f 1 -d .)"
-"    SECS_TO_END_OF_HOUR=$(expr 3600 - $UPTIME % 3600)"
-""
-"    # if LAST_ACTIVE hasn't been initialized, hadoop hasn't been installed"
-"    # yet (this happens on 4.x AMIs), or there are jobs running, just set"
-"    # LAST_ACTIVE to UPTIME. This also checks yarn application if it"
-"    # exists (see #1145)"
-"    if [ -z \"$LAST_ACTIVE\" ] || \ "
-"        ! which hadoop > /dev/null || \ "
-"        nice hadoop job -list 2> /dev/null | grep -q '^\s*job_' || \ "
-"        (which yarn > /dev/null && \ "
-"            nice yarn application -list 2> /dev/null | \ "
-"            grep -v 'Total number' | grep -q RUNNING)"
-"    then"
-"        LAST_ACTIVE=$UPTIME"
-"    else"
-"	# the cluster is idle! how long has this been going on?"
-"        SECS_IDLE=$(expr $UPTIME - $LAST_ACTIVE)"
-""
-"        if expr $SECS_IDLE '>' $MAX_SECS_IDLE '&' \ "
-"            $SECS_TO_END_OF_HOUR '<' $MIN_SECS_TO_END_OF_HOUR > /dev/null"
-"        then"
-"            sudo shutdown -h now"
-"            exit"
-"        fi"
-"    fi"
-"done"
-"# close file handles to daemonize the script; otherwise bootstrapping"
-"# never finishes"
-") 0<&- &> /dev/null &"
+_TIMEOUT_SCRIPT = """#!/bin/sh 
+MAX_SECS_IDLE={max_secs_idle}
+if [ -z "$MAX_SECS_IDLE" ]; then MAX_SECS_IDLE=1800; fi
 
-_MLFLOW_RUN_SCRIPT = "#!/usr/bin/env bash"
-"aws s3 cp {environment_config_location} var.env"
-"{input_tasks}"
-"mlflow run --ignore-duplicate-parameters ~/mlflow-code/ $MLFLOW_PARSED_PARAMETER"
-"{output_tasks}"
+MIN_SECS_TO_END_OF_HOUR={min_secs_to_end_of_hour}
+if [ -z "$MIN_SECS_TO_END_OF_HOUR" ]; then MIN_SECS_TO_END_OF_HOUR=300; fi
+
+
+(
+while true  # the only way out is to SHUT DOWN THE MACHINE
+do
+    # get the uptime as an integer (expr can't handle decimals)
+    UPTIME=$(cat /proc/uptime | cut -f 1 -d .)
+    SECS_TO_END_OF_HOUR=$(expr 3600 - $UPTIME % 3600)
+
+    # if LAST_ACTIVE hasn't been initialized, hadoop hasn't been installed
+    # yet (this happens on 4.x AMIs), or there are jobs running, just set
+    # LAST_ACTIVE to UPTIME. This also checks yarn application if it
+    # exists (see #1145)
+    if [ -z "$LAST_ACTIVE" ] || \ 
+        ! which hadoop > /dev/null || \ 
+        nice hadoop job -list 2> /dev/null | grep -q '^\s*job_' || \ 
+        (which yarn > /dev/null && \ 
+            nice yarn application -list 2> /dev/null | \ 
+            grep -v 'Total number' | grep -q RUNNING)
+    then
+        LAST_ACTIVE=$UPTIME
+    else
+	# the cluster is idle! how long has this been going on?
+        SECS_IDLE=$(expr $UPTIME - $LAST_ACTIVE)
+        if expr $SECS_IDLE '>' $MAX_SECS_IDLE '&' \ 
+            $SECS_TO_END_OF_HOUR '<' $MIN_SECS_TO_END_OF_HOUR > /dev/null
+        then
+            sudo shutdown -h now
+            exit
+        fi
+    fi
+done
+# close file handles to daemonize the script; otherwise bootstrapping
+# never finishes
+) 0<&- &> /dev/null &
+"""
+
+_MLFLOW_RUN_SCRIPT = """#!/bin/bash
+aws s3 cp {environment_config_location} var.env
+chmod +x var.env
+source var.env
+echo "Current Directory $(pwd)"
+env
+{input_tasks}
+cd {source_directory}
+eval "$(/mnt/miniconda/bin/conda shell.bash hook)"
+conda activate $MLFLOW_CONDA_ENV_NAME
+pip install git+https://github.com/jerrygb/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
+mlflow run --ignore-duplicate-parameters --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
+{output_tasks}
+"""
 
 
 def train_emr():
@@ -226,7 +241,7 @@ def upload_source_code(work_dir, bucket_name, prefix, model_name='model'):
     transfer = boto3.s3.transfer.S3Transfer(client=client)
     s3_source_code_key = '{}/sourcedir.tar.gz'.format(prefix)
     target_archive_path = os.path.join(os.getcwd(), 'sourcedir.tar.gz')
-    _create_code_archive(work_dir, target_archive_path, model_name)
+    _create_code_archive(work_dir, target_archive_path)
     transfer.upload_file(filename=target_archive_path,
                          bucket=bucket_name, key=s3_source_code_key,
                          extra_args={'ServerSideEncryption': 'AES256'})
@@ -249,35 +264,7 @@ def upload_environment(bucket_name, prefix, environment_config='var.env'):
     return file_uri
 
 
-# def _compress_upload_project_to_s3(work_dir, bucket_name, prefix):
-#     client = boto3.client('s3')
-#     transfer = boto3.s3.transfer.S3Transfer(client=client)
-#     s3_source_code_key = '{}//sourcedir.tar.gz'.format(prefix)
-#     target_archive_path = os.path.join(os.getcwd(), 'sourcedir.tar.gz')
-#     _create_code_archive(work_dir, target_archive_path, 'model')
-#     transfer.upload_file(filename=target_archive_path,
-#                          bucket=bucket_name, key=s3_source_code_key,
-#                          extra_args={'ServerSideEncryption': 'AES256'})
-#     _logger.info('Uploaded the source code to %s', 's3://{}/{}'.format(bucket_name, s3_source_code_key))
-#     return 's3://{}/{}'.format(bucket_name, s3_source_code_key)
-#
-#
-# def _compress_upload_project_to_s3_codebuild(work_dir, bucket_name, canonical_name, codebuild_stage,
-#                                              codebuild_no, commit_id_short):
-#     client = boto3.client('s3')
-#     transfer = boto3.s3.transfer.S3Transfer(client=client)
-#     s3_source_code_key = '{}/{}/{}-{}/sourcedir.tar.gz'.format(canonical_name, codebuild_stage,
-#                                                                codebuild_no, commit_id_short)
-#     target_archive_path = os.path.join(os.getcwd(), 'sourcedir.tar.gz')
-#     _create_code_archive(work_dir, target_archive_path, canonical_name)
-#     transfer.upload_file(filename=target_archive_path,
-#                          bucket=bucket_name, key=s3_source_code_key,
-#                          extra_args={'ServerSideEncryption': 'AES256'})
-#     _logger.info('Uploaded the source code to %s', 's3://{}/{}'.format(bucket_name, s3_source_code_key))
-#     return 's3://{}/{}'.format(bucket_name, s3_source_code_key)
-
-
-def _create_code_archive(work_dir, result_path, model_name):
+def _create_code_archive(work_dir, result_path):
     """
     Creates build context tarfile containing Dockerfile and project code, returning path to tarfile
     """
@@ -322,11 +309,13 @@ def _make_tarfile(output_filename, source_dir, archive_name, custom_filter=None)
 
 def run_emr_training_job(emr_config, uri, experiment_id, run_id, work_dir, project, synchronous, environment_config):
     job_runner = EmrCodeBuildJobRunner(experiment_id, run_id, emr_config, uri, work_dir, project, environment_config)
+    job_runner.upload_files()
     job_runner.setup_tags()
     job_runner.setup_code_and_environment()
     job_runner.run()
 
-    return EmrSubmittedRun(emr_config, experiment_id, run_id, uri, work_dir, project, synchronous)
+    return EmrSubmittedRun(emr_config, experiment_id, run_id, uri, work_dir, project, synchronous,
+                           job_runner.job_flow_id)
     # env_vars = {
     #     tracking._TRACKING_URI_ENV_VAR: tracking_uri,
     #     tracking._EXPERIMENT_ID_ENV_VAR: experiment_id,
@@ -342,26 +331,13 @@ def parse_uri(uri):
     return parsed.scheme, parsed.netloc, path
 
 
-def is_s3_prefix(bucket_name, input, key):
-    is_prefix = False
-    s3 = boto3.resource('s3')
-    bucket = s3.Bucket(bucket_name)
-    files = list(bucket.objects.filter(Prefix=key))
-    if len(files) <= 0:
-        raise MlflowException('Source specified as input is not found for EMR Backend. %s', input)
-    if len(files) > 1 or files[0].key != key:
-        return True
-    else:
-        return False
-
-
 def resolve_input(input):
     source = input['Source']
     scheme, bucket_name, key = parse_uri(source)
     if scheme != 's3':
         raise MlflowException('Unknown source specified as input for EMR Backend. %s', input)
     # Determine whether the input is S3 Prefix or a file
-    if is_s3_prefix(bucket_name, input, key):
+    if input.get('SourceType', 'prefix').lower() == 'prefix':
         command = 'sync'
     else:
         command = 'cp'
@@ -373,6 +349,10 @@ def resolve_input(input):
                       f'hdfs dfs -put $TMP_DIR {destination}'
                       ]
     else:
+
+        # If relative path is specified then append the pre-defined source code directory
+        if not destination.startswith('/'):
+            destination = os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME, destination)
         input_task = [f'aws s3 {command} {source} {destination}']
     return input_task
 
@@ -392,35 +372,30 @@ def resolve_output(output):
     else:
         sse_suffix = ' --sse AES256'
     command = ''
-    if os.path.isdir(source):
+    local_source_type = output.get('SourceType', 'folder').lower()
+    if local_source_type == 'folder':
         command = 'sync'
-    elif os.path.isfile(source):
+    elif local_source_type == 'file':
         command = 'cp'
+
+    # If relative path is specified then append the pre-defined source code directory
+    if not source.startswith('/'):
+        source = os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME, source)
+
     return [f'aws s3 {command} {source} {destination}{sse_suffix}']
-
-
-def setup_output_tasks(emr_config):
-    output_tasks_list = []
-    if emr_config.get('Output'):
-        outputs = emr_config['Output']
-        if isinstance(outputs, list):
-            for output in outputs:
-                output_tasks_list = output_tasks_list + resolve_output(output)
-        elif isinstance(outputs, dict):
-            output_tasks_list = resolve_output(outputs)
-
-    return output_tasks_list
 
 
 class EmrRunner(object):
     def __init__(self, mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir, project, environment_config):
+        _logger.info('EMR Runner %s', emr_config)
+        _logger.info('Environment Config %s', environment_config)
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri
         self._work_dir = work_dir
         self._project = project
-        self.environment_config = environment_config
         self.emr_config = emr_config
+        self.environment_config = environment_config
         self.instance_groups = emr_config['ResourceConfig']['InstanceGroups']
         self.ec2_key_name = emr_config['ResourceConfig'].get('Ec2KeyName', '')
         self.ec2_subnet_id = emr_config['ResourceConfig'].get('Ec2SubnetId')
@@ -440,22 +415,32 @@ class EmrRunner(object):
         store = _get_store()
         artifact_uri = store.get_run(self._mlflow_run_id).info.artifact_uri
         _, self.bucket_name, self.prefix = parse_uri(artifact_uri)
+        self.input_tasks_list = self._setup_input_tasks()
+        self.output_tasks_list = self._setup_output_tasks()
+
+    def upload_files(self):
         self.source_location = upload_source_code(self._work_dir, self.bucket_name, self.prefix)
         self.environment_config_location = upload_environment(self.bucket_name,
                                                               self.prefix, self.environment_config)
 
-        # Setup Input tasks
-        self.input_tasks_list = self.setup_input_tasks(emr_config)
-
-        # Setup Output tasks
-        self.output_tasks_list = setup_output_tasks(emr_config)
-
         self.setup_bootstrap_script, self.timeout_script, self.run_script = self.upload_scripts()
 
-    def setup_input_tasks(self, emr_config):
+    def _setup_output_tasks(self):
+        output_tasks_list = []
+        if self.emr_config.get('Output'):
+            outputs = self.emr_config['Output']
+            if isinstance(outputs, list):
+                for output in outputs:
+                    output_tasks_list = output_tasks_list + resolve_output(output)
+            elif isinstance(outputs, dict):
+                output_tasks_list = resolve_output(outputs)
+
+        return output_tasks_list
+
+    def _setup_input_tasks(self):
         input_tasks_list = []
-        if emr_config.get('Input'):
-            inputs = emr_config['Input']
+        if self.emr_config.get('Input'):
+            inputs = self.emr_config['Input']
             if isinstance(inputs, list):
                 for input in inputs:
                     input_tasks_list = input_tasks_list + resolve_input(input)
@@ -476,6 +461,8 @@ class EmrRunner(object):
                         source_location=self.source_location,
                         environment_config_location=self.environment_config_location,
                         mlflow_version=__version__,
+                        source_root_dir=SOURCE_ROOT_DIR,
+                        source_directory=os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME)
                     )
                 )
 
@@ -492,7 +479,9 @@ class EmrRunner(object):
                     _MLFLOW_RUN_SCRIPT.format(
                         environment_config_location=self.environment_config_location,
                         input_tasks='\n'.join(self.input_tasks_list),
-                        output_tasks='\n'.join(self.output_tasks_list)
+                        output_tasks='\n'.join(self.output_tasks_list),
+                        source_directory=os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME),
+                        run_id=self._mlflow_run_id
                     )
                 )
             s3_setup_script_key = '{}/{}'.format(self.prefix, SETUP_SCRIPT)
@@ -586,8 +575,9 @@ class EmrRunner(object):
         )
         response_code = response['ResponseMetadata']['HTTPStatusCode']
         if response['ResponseMetadata']['HTTPStatusCode'] == 200:
-            self.job_flow_id = response['JobFlowId']
+            self.job_flow_id = response['JobFlowId']  # Same as Cluster ID
             _logger.info('Successfully started the EMR cluster Id: %s', self.job_flow_id)
+            _logger.info('Full Response: %s', response)
         else:
             _logger.error('Failed to start the EMR cluster Id. Code: %d Response: %s',
                           response['ResponseMetadata']['HTTPStatusCode'], response)
@@ -633,14 +623,14 @@ class EmrCodeBuildJobRunner(EmrRunner):
         super(EmrCodeBuildJobRunner, self).__init__(mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir,
                                                     project, environment_config)
 
-        # Override Prefix and Bucket Name
+        self._fetch_codebuild_tags()
         self.prefix = '{}/{}/{}-{}'.format(self._canonical_name, self._codebuild_stage,
+                                           # Override Prefix and Bucket Name
                                            self._codebuild_no, self._commit_id_short)
         self.bucket_name = self.emr_config[S3_BUCKET_NAME]
 
     def setup_tags(self):
         super(EmrCodeBuildJobRunner, self).setup_tags()
-        self._fetch_codebuild_tags()
 
     def _fetch_codebuild_tags(self):
         self._pipeline_bucket = self.emr_config[S3_BUCKET_NAME]
@@ -677,7 +667,6 @@ class EmrCodeBuildJobRunner(EmrRunner):
             tracking.MlflowClient().set_tag(
                 self._mlflow_run_id, name, value
             )
-            del self.emr_config[name]
 
 
 class EmrSubmittedRun(SubmittedRun):
@@ -689,7 +678,8 @@ class EmrSubmittedRun(SubmittedRun):
     :param job_namespace: Sagemaker job namespace.
     """
 
-    def __init__(self, emr_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous):
+    def __init__(self, emr_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous,
+                 job_flow_id):
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri
@@ -698,6 +688,7 @@ class EmrSubmittedRun(SubmittedRun):
         self.emr_config = emr_config
         self.synchronous = synchronous
         self.cluster_name = emr_config[CLUSTER_NAME]
+        self.job_flow_id = job_flow_id
         super(EmrSubmittedRun, self).__init__()
 
     @property
@@ -710,8 +701,33 @@ class EmrSubmittedRun(SubmittedRun):
         # training_job = sagemaker_session.describe_training_job(job_name=self.training_job_name)
         # job_status = training_job['TrainingJobStatus']
 
-        job_status = ''
-        if job_status != 'Completed':
-            _logger.error('Cluster did not complete jobs successfully. Current Status: %s', job_status)
-            raise Exception('Job: %s failed with a status - %s', self.cluster_name, job_status)
+        client = boto3.client('emr')
+        # Blocking wait until cluster exits with or without error
+        while True:
+            import time
+            job_status = client.describe_cluster(ClusterId=self.job_flow_id)['Cluster']['Status']
+            if job_status['State'] in ['TERMINATED_WITH_ERRORS']:
+                _logger.error('Cluster did not complete jobs successfully. Current Status: %s', job_status)
+                raise MlflowException('EMR Backend Job: %s failed with a State - %s', self.cluster_name,
+                                      job_status['State'])
+            elif job_status['State'] in ['TERMINATING']:
+                _logger.info('Cluster completed the jobs. Terminating now. Current Status: %s', job_status)
+                if job_status['StateChangeReason'].get('Code', '') == 'STEP_FAILURE':
+                    _logger.error(
+                        'Cluster completed the jobs. But some of steps/bootstrapping failed. Error Message: %s',
+                        job_status['StateChangeReason'].get('Message', ''))
+                    raise MlflowException('EMR Backend Job: %s failed. Reason: %s', self.cluster_name,
+                                          job_status['StateChangeReason'])
+                if job_status['StateChangeReason'].get('Code', '') == 'ALL_STEPS_COMPLETED':
+                    _logger.info(
+                        'EMR Cluster (%s) completed the job steps. Waiting for terminating the cluster. '
+                        'Status Message: %s', self.job_flow_id, job_status)
+            elif job_status['State'] in ['TERMINATED']:
+                _logger.info('EMR Cluster (%s) terminated. Current Status: %s', self.job_flow_id, job_status)
+                break
+            else:
+                _logger.info('EMR Cluster (%s) is currently processing the job. Current Status: %s', self.job_flow_id,
+                             job_status)
+            time.sleep(EMR_CHECK_INTERVAL)
+
         return True

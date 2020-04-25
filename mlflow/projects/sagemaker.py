@@ -316,9 +316,9 @@ class SagemakerRunner(object):
 
 
 class SagemakerCodeBuildJobRunner(SagemakerRunner):
-
-    def setup_tags(self):
-        super(SagemakerCodeBuildJobRunner, self).setup_tags()
+    def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir, project, mode):
+        super(SagemakerRunner, self).__init__(mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir,
+                                              project, mode)
         self._fetch_codebuild_tags()
 
     def _fetch_codebuild_tags(self):
@@ -330,7 +330,6 @@ class SagemakerCodeBuildJobRunner(SagemakerRunner):
         self._canonical_name = self.sagemaker_config[CANONICAL_MODEL_NAME]
         self._source_name = self.sagemaker_config[GIT_REPO_NAME]
         self._git_repo_url = self.sagemaker_config[GIT_REPO_URL]
-
 
         # Mlflow Tags
         tracking.MlflowClient().set_tag(

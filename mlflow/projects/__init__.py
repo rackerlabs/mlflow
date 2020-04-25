@@ -298,8 +298,6 @@ def _run(
                                                       active_run.info.run_id, work_dir, project, model_source_dir,
                                                       synchronous=synchronous, mode=mode)
 
-
-
         return submitted_run
     elif backend == "emr":
         from mlflow.projects import emr as emr
@@ -328,11 +326,14 @@ def _run(
         with open(os.path.join(model_source_dir, 'RUN_ID_URL'), 'w') as f:
             f.write('{}/#/experiments/{}/runs/{}'.format(mlflow.get_tracking_uri(), active_run.info.experiment_id,
                                                          active_run.info.run_id))
+        _logger.info('Completed Run. Now Waiting ...')
+        return submitted_run
     supported_backends = ["local", "databricks", "kubernetes", "sagemaker", "emr"]
-    raise ExecutionException(
-        "Got unsupported execution mode %s. Supported "
-        "values: %s" % (backend, supported_backends)
-    )
+    if backend not in supported_backends:
+        raise ExecutionException(
+            "Got unsupported execution mode %s. Supported "
+            "values: %s" % (backend, supported_backends)
+        )
 
 
 def run(
@@ -459,8 +460,11 @@ def run(
         mode=mode,
         environment_config=environment_config
     )
+    _logger.info('Returned from run ... ')
     if synchronous:
         _wait_for(submitted_run_obj, backend)
+    else:
+        _logger.info('Non-synchronous Mode. Exiting ... ')
     return submitted_run_obj
 
 
@@ -975,33 +979,58 @@ def _parse_kubernetes_config(backend_config):
 
 
 def _parse_emr_config(backend_config, mode=None):
+    _logger.info('Parse start %s', backend_config)
     # Defaults for EMR training job submission.
     default_emr_config = {
         "ReleaseLabel": "emr-5.29.0",
-        "ResourceConfig": {
+        "ResourceConfig": {  # Instances
             "InstanceGroups": [
                 {
                     "Name": "EmrMaster",
-                    "Market": "SPOT",
-                    "BidPriceAsPercentageOfOnDemandPrice": 70,
-                    "InstanceType": "m3.xlarge",
-                    "InstanceCount": 1
+                    "Market": "ON_DEMAND",
+                    "InstanceType": "m5.xlarge",
+                    "InstanceCount": 1,
+                    "InstanceRole": "MASTER",
+                    "EbsConfiguration": {
+                        "EbsBlockDeviceConfigs": [
+                            {
+                                "VolumeSpecification": {
+                                    "VolumeType": "gp2",
+                                    "SizeInGB": 50
+                                },
+                            }
+                        ],
+                        "EbsOptimized": True,
+                    }
                 },
                 {
                     "Name": "EmrCore",
-                    "Market": "SPOT",
-                    "BidPriceAsPercentageOfOnDemandPrice": 70,
-                    "InstanceType": "m3.xlarge",
-                    "InstanceCount": 2
+                    "Market": "ON_DEMAND",
+                    "InstanceType": "m5.2xlarge",
+                    "InstanceCount": 2,
+                    "InstanceRole": "CORE",
+                    "EbsConfiguration": {
+                        "EbsBlockDeviceConfigs": [
+                            {
+                                "VolumeSpecification": {
+                                    "VolumeType": "gp2",
+                                    "SizeInGB": 50
+                                },
+                            }
+                        ],
+                        "EbsOptimized": True,
+                    }
                 }
             ],
+            "TerminationProtected": False,
+            "KeepJobFlowAliveWhenNoSteps": False
+        },
         "VisibleToAllUsers": True,
         "Applications": [{'Name': 'Hadoop'}, {'Name': 'Spark'}],
         "JobFlowRole": "EMR_EC2_DefaultRole",
         "ServiceRole": "EMR_DefaultRole",
         "TerminationProtected": False,
         "KeepJobFlowAliveWhenNoSteps": False
-        },
     }
 
     if not backend_config:
@@ -1016,11 +1045,6 @@ def _parse_emr_config(backend_config, mode=None):
     if "Input" not in emr_config.keys():
         raise ExecutionException(
             "Could not find Input in backend_config."
-        )
-
-    if "BootstrapActions" not in emr_config.keys():
-        raise ExecutionException(
-            "Could not find BootstrapActions in backend_config."
         )
 
     if mode.lower() == 'inference':
@@ -1041,8 +1065,7 @@ def _parse_emr_config(backend_config, mode=None):
     if not emr_config.get('LogUri'):
         emr_config["LogUri"] = "s3://{}/emr_logs/{}".format(backend_config['S3BucketName'], emr_config["ClusterName"])
 
-    if not emr_config["VisibleToAllUsers"]:
-        emr_config["VisibleToAllUsers"] = True
+    _logger.info('Parse end %s', backend_config)
     return emr_config
 
 
