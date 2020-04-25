@@ -342,6 +342,76 @@ def parse_uri(uri):
     return parsed.scheme, parsed.netloc, path
 
 
+def is_s3_prefix(bucket_name, input, key):
+    is_prefix = False
+    s3 = boto3.resource('s3')
+    bucket = s3.Bucket(bucket_name)
+    files = list(bucket.objects.filter(Prefix=key))
+    if len(files) <= 0:
+        raise MlflowException('Source specified as input is not found for EMR Backend. %s', input)
+    if len(files) > 1 or files[0].key != key:
+        return True
+    else:
+        return False
+
+
+def resolve_input(input):
+    source = input['Source']
+    scheme, bucket_name, key = parse_uri(source)
+    if scheme != 's3':
+        raise MlflowException('Unknown source specified as input for EMR Backend. %s', input)
+    # Determine whether the input is S3 Prefix or a file
+    if is_s3_prefix(bucket_name, input, key):
+        command = 'sync'
+    else:
+        command = 'cp'
+    destination = input['Destination']
+    d_scheme, _, _ = parse_uri(destination)
+    if d_scheme == 'hdfs':
+        input_task = ['TMP_DIR=$(mktemp -d)',
+                      f'aws s3 {command} {source} $TMP_DIR',
+                      f'hdfs dfs -put $TMP_DIR {destination}'
+                      ]
+    else:
+        input_task = [f'aws s3 {command} {source} {destination}']
+    return input_task
+
+
+def resolve_output(output):
+    source = output['Source']
+    destination = output['Destination']
+    d_scheme, _, _ = parse_uri(destination)
+    if d_scheme != 's3':
+        raise MlflowException('Unknown destination specified as input for EMR Backend. %s', output)
+    # Setup SSE Encryption
+    if output.get('KmsKeyId'):
+        key = output.get('KmsKeyId')
+        sse_suffix = f' --sse aws:kms --sse-kms-key-id {key}'
+    elif output.get('KmsEncrypt') is not None and output.get('KmsEncrypt'):
+        sse_suffix = ' --sse aws:kms'
+    else:
+        sse_suffix = ' --sse AES256'
+    command = ''
+    if os.path.isdir(source):
+        command = 'sync'
+    elif os.path.isfile(source):
+        command = 'cp'
+    return [f'aws s3 {command} {source} {destination}{sse_suffix}']
+
+
+def setup_output_tasks(emr_config):
+    output_tasks_list = []
+    if emr_config.get('Output'):
+        outputs = emr_config['Output']
+        if isinstance(outputs, list):
+            for output in outputs:
+                output_tasks_list = output_tasks_list + resolve_output(output)
+        elif isinstance(outputs, dict):
+            output_tasks_list = resolve_output(outputs)
+
+    return output_tasks_list
+
+
 class EmrRunner(object):
     def __init__(self, mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir, project, environment_config):
         self._mlflow_run_id = mlflow_run_id
@@ -378,7 +448,7 @@ class EmrRunner(object):
         self.input_tasks_list = self.setup_input_tasks(emr_config)
 
         # Setup Output tasks
-        self.output_tasks_list = self.setup_output_tasks(emr_config)
+        self.output_tasks_list = setup_output_tasks(emr_config)
 
         self.setup_bootstrap_script, self.timeout_script, self.run_script = self.upload_scripts()
 
@@ -388,111 +458,11 @@ class EmrRunner(object):
             inputs = emr_config['Input']
             if isinstance(inputs, list):
                 for input in inputs:
-                    source = input['Source']
-                    scheme, bucket_name, key = parse_uri(source)
-                    if scheme != 's3':
-                        raise MlflowException('Unknown source specified as input for EMR Backend. %s', input)
-
-                    # Determine whether the input is S3 Prefix or a file
-                    command = self.derive_s3_command_by_s3_source(bucket_name, input, key)
-                    destination = input['Destination']
-                    d_scheme, _, _ = parse_uri(destination)
-
-                    if d_scheme == 'hdfs':
-                        input_tasks = ['TMP_DIR=$(mktemp -d)',
-                                       f'aws s3 {command} {source} $TMP_DIR',
-                                       f'hdfs dfs -put $TMP_DIR {destination}'
-                                       ]
-                        input_tasks_list = input_tasks_list + input_tasks
-                    else:
-                        input_task = [f'aws s3 {command} {source} {destination}']
-                        input_tasks_list = input_tasks_list + input_task
+                    input_tasks_list = input_tasks_list + resolve_input(input)
             elif isinstance(inputs, dict):
-                source = inputs['Source']
-                scheme, bucket_name, key = parse_uri(source)
-                if scheme != 's3':
-                    raise MlflowException('Unknown source specified as input for EMR Backend. %s', inputs)
-
-                # Determine whether the input is S3 Prefix or a file
-                command = self.derive_s3_command_by_s3_source(bucket_name, inputs, key)
-                destination = inputs['Destination']
-                d_scheme, _, _ = parse_uri(destination)
-                if d_scheme == 'hdfs':
-                    input_tasks = ['TMP_DIR=$(mktemp -d)',
-                                   f'aws s3 {command} {source} $TMP_DIR',
-                                   f'hdfs dfs -put $TMP_DIR {destination}'
-                                   ]
-                    input_tasks_list = input_tasks_list + input_tasks
-                else:
-                    input_task = [f'aws s3 {command} {source} {destination}']
-                    input_tasks_list = input_tasks_list + input_task
+                input_tasks_list = resolve_input(inputs)
 
         return input_tasks_list
-
-
-    def setup_output_tasks(self, emr_config):
-        output_tasks_list = []
-        if emr_config.get('Output'):
-            outputs = emr_config['Output']
-            if isinstance(outputs, list):
-                for output in outputs:
-                    source = output['Source']
-                    destination = output['Destination']
-                    d_scheme, _, _ = parse_uri(destination)
-
-                    if d_scheme != 's3':
-                        raise MlflowException('Unknown destination specified as input for EMR Backend. %s', output)
-
-                    # Setup SSE Encryption
-                    if output.get('KmsKeyId'):
-                        key = output.get('KmsKeyId')
-                        sse_suffix = f' --sse aws:kms --sse-kms-key-id {key}'
-                    elif output.get('KmsEncrypt') is not None and output.get('KmsEncrypt'):
-                        sse_suffix = ' --sse aws:kms'
-                    else:
-                        sse_suffix = ' --sse AES256'
-                    command = ''
-                    if os.path.isdir(source):
-                        command = 'sync'
-                    elif os.path.isfile(source):
-                        command = 'cp'
-
-                    output_tasks_list = output_tasks_list + [f'aws s3 {command} {source} {destination}{sse_suffix}']
-            elif isinstance(outputs, dict):
-                source = outputs['Source']
-                destination = outputs['Destination']
-                d_scheme, _, _ = parse_uri(destination)
-
-                if d_scheme != 's3':
-                    raise MlflowException('Unknown destination specified as input for EMR Backend. %s', outputs)
-                if outputs.get('KmsKeyId'):
-                    key = outputs.get('KmsKeyId')
-                    sse_suffix = f' --sse aws:kms --sse-kms-key-id {key}'
-                elif outputs.get('KmsEncrypt') is not None and outputs.get('KmsEncrypt'):
-                    sse_suffix = ' --sse aws:kms'
-                else:
-                    sse_suffix = ' --sse AES256'
-
-                command = ''
-                if os.path.isdir(source):
-                    command = 'sync'
-                elif os.path.isfile(source):
-                    command = 'cp'
-                output_tasks_list = output_tasks_list + [f'aws s3 {command} {source} {destination}{sse_suffix}']
-
-        return output_tasks_list
-
-    def derive_s3_command_by_s3_source(self, bucket_name, input, key):
-        s3 = boto3.resource('s3')
-        bucket = s3.Bucket(bucket_name)
-        files = list(bucket.objects.filter(Prefix=key))
-        if len(files) <= 0:
-            raise MlflowException('Source specified as input is not found for EMR Backend. %s', input)
-        if len(files) > 1 or files[0].key != key:
-            command = 'sync'
-        else:
-            command = 'cp'
-        return command
 
     def upload_scripts(self):
         with TempDir() as tmp:
