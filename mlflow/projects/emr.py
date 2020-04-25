@@ -69,7 +69,6 @@ _EMR_BOOTSTRAP_SETUP_TEMPLATE = "#!/usr/bin/env bash"
 ""
 "aws s3 cp {source_location} source_dir.tgz"
 "aws s3 cp {environment_config_location} var.env"
-"{input_tasks}"
 "source var.env"
 "mkdir -p ~/mlflow-code"
 "tar xvf source_dir.tgz -C ~/mlflow-code"
@@ -104,8 +103,8 @@ _EMR_BOOTSTRAP_SETUP_TEMPLATE = "#!/usr/bin/env bash"
 
 # By default, we allow an idle time of 15 minutes, and shut down within
 # the last 5 minutes of the hour.
-_TIMEOUT_SCRIPT = "#!/bin/sh"\
-"MAX_SECS_IDLE={max_secs_idle}"
+_TIMEOUT_SCRIPT = "#!/bin/sh" \
+                  "MAX_SECS_IDLE={max_secs_idle}"
 "if [ -z \"$MAX_SECS_IDLE\" ]; then MAX_SECS_IDLE=1800; fi"
 ""
 "MIN_SECS_TO_END_OF_HOUR={min_secs_to_end_of_hour}"
@@ -149,12 +148,12 @@ _TIMEOUT_SCRIPT = "#!/bin/sh"\
 
 _MLFLOW_RUN_SCRIPT = "#!/usr/bin/env bash"
 "aws s3 cp {environment_config_location} var.env"
+"{input_tasks}"
 "mlflow run --ignore-duplicate-parameters ~/mlflow-code/ $MLFLOW_PARSED_PARAMETER"
 "{output_tasks}"
 
 
 def train_emr():
-
     _logger.info("Running training EMR...")
     _logger.info('-------')
     _logger.info('Running mlflow')
@@ -334,71 +333,13 @@ def run_emr_training_job(emr_config, uri, experiment_id, run_id, work_dir, proje
     # }
 
 
-def _parse_s3_uri(uri):
+def parse_uri(uri):
     parsed = urllib.parse.urlparse(uri)
-    if parsed.scheme != "s3":
-        raise Exception("Not an S3 URI: %s" % uri)
     path = parsed.path
-    if path.startswith('/'):
-        path = path[1:]
-    return parsed.netloc, path
-
-
-def upload_bootstrap_scripts(bucket_name, prefix, source_location, environment_config_location):
-    with TempDir() as tmp:
-        cwd = tmp.path()
-        setup_script = os.path.join(cwd, SETUP_SCRIPT)
-        timeout_script = os.path.join(cwd, TIMEOUT_SCRIPT)
-        run_script = os.path.join(cwd, RUN_SCRIPT)
-        with open(setup_script, "w") as f:
-            f.write(
-                _EMR_BOOTSTRAP_SETUP_TEMPLATE.format(
-                    source_location=source_location,
-                    environment_config_location=environment_config_location,
-                    mlflow_version=__version__,
-                )
-            )
-
-        with open(timeout_script, "w") as f:
-            f.write(
-                _TIMEOUT_SCRIPT.format(
-                    max_secs_idle=300,
-                    min_secs_to_end_of_hour=3600,
-                )
-            )
-
-        with open(run_script, "w") as f:
-            f.write(
-                _MLFLOW_RUN_SCRIPT.format(
-                    environment_config_location=environment_config_location,
-                )
-            )
-        s3_setup_script_key = '{}/{}'.format(prefix, SETUP_SCRIPT)
-        s3_timeout_script_key = '{}/{}'.format(prefix, TIMEOUT_SCRIPT)
-        s3_run_script_key = '{}/{}'.format(prefix, RUN_SCRIPT)
-        client = boto3.client('s3')
-        transfer = boto3.s3.transfer.S3Transfer(client=client)
-
-        transfer.upload_file(filename=setup_script,
-                             bucket=bucket_name, key=s3_setup_script_key,
-                             extra_args={'ServerSideEncryption': 'AES256'})
-        setup_script_uri = f's3://{bucket_name}/{s3_setup_script_key}'
-        _logger.info('Uploaded the setup script to %s', setup_script_uri)
-
-        transfer.upload_file(filename=timeout_script,
-                             bucket=bucket_name, key=s3_timeout_script_key,
-                             extra_args={'ServerSideEncryption': 'AES256'})
-        timeout_script_uri = f's3://{bucket_name}/{s3_timeout_script_key}'
-        _logger.info('Uploaded the timeout script to %s', timeout_script_uri)
-
-        transfer.upload_file(filename=run_script,
-                             bucket=bucket_name, key=s3_run_script_key,
-                             extra_args={'ServerSideEncryption': 'AES256'})
-        run_script_uri = f's3://{bucket_name}/{s3_run_script_key}'
-        _logger.info('Uploaded the run script to %s', run_script_uri)
-
-        return setup_script_uri, timeout_script_uri, run_script_uri
-
+    if parsed.scheme:
+        if path.startswith('/'):
+            path = path[1:]
+    return parsed.scheme, parsed.netloc, path
 
 
 class EmrRunner(object):
@@ -428,13 +369,187 @@ class EmrRunner(object):
         self.region = self.session.region_name or "us-east-2"
         store = _get_store()
         artifact_uri = store.get_run(self._mlflow_run_id).info.artifact_uri
-        self.bucket_name, self.prefix = _parse_s3_uri(artifact_uri)
+        _, self.bucket_name, self.prefix = parse_uri(artifact_uri)
         self.source_location = upload_source_code(self._work_dir, self.bucket_name, self.prefix)
         self.environment_config_location = upload_environment(self.bucket_name,
                                                               self.prefix, self.environment_config)
-        self.setup_bootstrap_script, self.timeout_script, self.run_script = upload_bootstrap_scripts(self.bucket_name, self.prefix,
-                                                                                    self.source_location,
-                                                                                    self.environment_config_location)
+
+        # Setup Input tasks
+        self.input_tasks_list = self.setup_input_tasks(emr_config)
+
+        # Setup Output tasks
+        self.output_tasks_list = self.setup_output_tasks(emr_config)
+
+        self.setup_bootstrap_script, self.timeout_script, self.run_script = self.upload_scripts()
+
+    def setup_input_tasks(self, emr_config):
+        input_tasks_list = []
+        if emr_config.get('Input'):
+            inputs = emr_config['Input']
+            if isinstance(inputs, list):
+                for input in inputs:
+                    source = input['Source']
+                    scheme, bucket_name, key = parse_uri(source)
+                    if scheme != 's3':
+                        raise MlflowException('Unknown source specified as input for EMR Backend. %s', input)
+
+                    # Determine whether the input is S3 Prefix or a file
+                    command = self.derive_s3_command_by_s3_source(bucket_name, input, key)
+                    destination = input['Destination']
+                    d_scheme, _, _ = parse_uri(destination)
+
+                    if d_scheme == 'hdfs':
+                        input_tasks = ['TMP_DIR=$(mktemp -d)',
+                                       f'aws s3 {command} {source} $TMP_DIR',
+                                       f'hdfs dfs -put $TMP_DIR {destination}'
+                                       ]
+                        input_tasks_list = input_tasks_list + input_tasks
+                    else:
+                        input_task = [f'aws s3 {command} {source} {destination}']
+                        input_tasks_list = input_tasks_list + input_task
+            elif isinstance(inputs, dict):
+                source = inputs['Source']
+                scheme, bucket_name, key = parse_uri(source)
+                if scheme != 's3':
+                    raise MlflowException('Unknown source specified as input for EMR Backend. %s', inputs)
+
+                # Determine whether the input is S3 Prefix or a file
+                command = self.derive_s3_command_by_s3_source(bucket_name, inputs, key)
+                destination = inputs['Destination']
+                d_scheme, _, _ = parse_uri(destination)
+                if d_scheme == 'hdfs':
+                    input_tasks = ['TMP_DIR=$(mktemp -d)',
+                                   f'aws s3 {command} {source} $TMP_DIR',
+                                   f'hdfs dfs -put $TMP_DIR {destination}'
+                                   ]
+                    input_tasks_list = input_tasks_list + input_tasks
+                else:
+                    input_task = [f'aws s3 {command} {source} {destination}']
+                    input_tasks_list = input_tasks_list + input_task
+
+        return input_tasks_list
+
+
+    def setup_output_tasks(self, emr_config):
+        output_tasks_list = []
+        if emr_config.get('Output'):
+            outputs = emr_config['Output']
+            if isinstance(outputs, list):
+                for output in outputs:
+                    source = output['Source']
+                    destination = output['Destination']
+                    d_scheme, _, _ = parse_uri(destination)
+
+                    if d_scheme != 's3':
+                        raise MlflowException('Unknown destination specified as input for EMR Backend. %s', output)
+
+                    # Setup SSE Encryption
+                    if output.get('KmsKeyId'):
+                        key = output.get('KmsKeyId')
+                        sse_suffix = f' --sse aws:kms --sse-kms-key-id {key}'
+                    elif output.get('KmsEncrypt') is not None and output.get('KmsEncrypt'):
+                        sse_suffix = ' --sse aws:kms'
+                    else:
+                        sse_suffix = ' --sse AES256'
+                    command = ''
+                    if os.path.isdir(source):
+                        command = 'sync'
+                    elif os.path.isfile(source):
+                        command = 'cp'
+
+                    output_tasks_list = output_tasks_list + [f'aws s3 {command} {source} {destination}{sse_suffix}']
+            elif isinstance(outputs, dict):
+                source = outputs['Source']
+                destination = outputs['Destination']
+                d_scheme, _, _ = parse_uri(destination)
+
+                if d_scheme != 's3':
+                    raise MlflowException('Unknown destination specified as input for EMR Backend. %s', outputs)
+                if outputs.get('KmsKeyId'):
+                    key = outputs.get('KmsKeyId')
+                    sse_suffix = f' --sse aws:kms --sse-kms-key-id {key}'
+                elif outputs.get('KmsEncrypt') is not None and outputs.get('KmsEncrypt'):
+                    sse_suffix = ' --sse aws:kms'
+                else:
+                    sse_suffix = ' --sse AES256'
+
+                command = ''
+                if os.path.isdir(source):
+                    command = 'sync'
+                elif os.path.isfile(source):
+                    command = 'cp'
+                output_tasks_list = output_tasks_list + [f'aws s3 {command} {source} {destination}{sse_suffix}']
+
+        return output_tasks_list
+
+    def derive_s3_command_by_s3_source(self, bucket_name, input, key):
+        s3 = boto3.resource('s3')
+        bucket = s3.Bucket(bucket_name)
+        files = list(bucket.objects.filter(Prefix=key))
+        if len(files) <= 0:
+            raise MlflowException('Source specified as input is not found for EMR Backend. %s', input)
+        if len(files) > 1 or files[0].key != key:
+            command = 'sync'
+        else:
+            command = 'cp'
+        return command
+
+    def upload_scripts(self):
+        with TempDir() as tmp:
+            cwd = tmp.path()
+            setup_script = os.path.join(cwd, SETUP_SCRIPT)
+            timeout_script = os.path.join(cwd, TIMEOUT_SCRIPT)
+            run_script = os.path.join(cwd, RUN_SCRIPT)
+            with open(setup_script, "w") as f:
+                f.write(
+                    _EMR_BOOTSTRAP_SETUP_TEMPLATE.format(
+                        source_location=self.source_location,
+                        environment_config_location=self.environment_config_location,
+                        mlflow_version=__version__,
+                    )
+                )
+
+            with open(timeout_script, "w") as f:
+                f.write(
+                    _TIMEOUT_SCRIPT.format(
+                        max_secs_idle=300,
+                        min_secs_to_end_of_hour=3600,
+                    )
+                )
+
+            with open(run_script, "w") as f:
+                f.write(
+                    _MLFLOW_RUN_SCRIPT.format(
+                        environment_config_location=self.environment_config_location,
+                        input_tasks='\n'.join(self.input_tasks_list),
+                        output_tasks='\n'.join(self.output_tasks_list)
+                    )
+                )
+            s3_setup_script_key = '{}/{}'.format(self.prefix, SETUP_SCRIPT)
+            s3_timeout_script_key = '{}/{}'.format(self.prefix, TIMEOUT_SCRIPT)
+            s3_run_script_key = '{}/{}'.format(self.prefix, RUN_SCRIPT)
+            client = boto3.client('s3')
+            transfer = boto3.s3.transfer.S3Transfer(client=client)
+
+            transfer.upload_file(filename=setup_script,
+                                 bucket=self.bucket_name, key=s3_setup_script_key,
+                                 extra_args={'ServerSideEncryption': 'AES256'})
+            setup_script_uri = f's3://{self.bucket_name}/{s3_setup_script_key}'
+            _logger.info('Uploaded the setup script to %s', setup_script_uri)
+
+            transfer.upload_file(filename=timeout_script,
+                                 bucket=self.bucket_name, key=s3_timeout_script_key,
+                                 extra_args={'ServerSideEncryption': 'AES256'})
+            timeout_script_uri = f's3://{self.bucket_name}/{s3_timeout_script_key}'
+            _logger.info('Uploaded the timeout script to %s', timeout_script_uri)
+
+            transfer.upload_file(filename=run_script,
+                                 bucket=self.bucket_name, key=s3_run_script_key,
+                                 extra_args={'ServerSideEncryption': 'AES256'})
+            run_script_uri = f's3://{self.bucket_name}/{s3_run_script_key}'
+            _logger.info('Uploaded the run script to %s', run_script_uri)
+
+            return setup_script_uri, timeout_script_uri, run_script_uri
 
     def setup_tags(self):
         self._setup_mlflow_tags()
@@ -491,9 +606,9 @@ class EmrRunner(object):
                         'Args': [self.run_script]
                         # 'Jar': 'command-runner.jar',
                         # 'Args': [
-                            # "spark-submit",
-                            # "python app",
-                            # arguments
+                        # "spark-submit",
+                        # "python app",
+                        # arguments
                         # ]
                     }
                 },

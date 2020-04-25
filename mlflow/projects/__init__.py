@@ -295,21 +295,10 @@ def _run(
         model_source_dir = sagemaker_config[MODEL_SRC_DIR]
         del sagemaker_config[MODEL_SRC_DIR]
         submitted_run = sm.run_sagemaker_training_job(sagemaker_config, uri, active_run.info.experiment_id,
-                                                      active_run.info.run_id, work_dir, project,
+                                                      active_run.info.run_id, work_dir, project, model_source_dir,
                                                       synchronous=synchronous, mode=mode)
 
-        with open(os.path.join(model_source_dir, 'RUN_ID'), 'w') as f:
-            f.write(active_run.info.run_id)
 
-        with open(os.path.join(model_source_dir, 'EXPERIMENT_ID'), 'w') as f:
-            f.write(active_run.info.experiment_id)
-
-        with open(os.path.join(model_source_dir, 'TRACKING_URL'), 'w') as f:
-            f.write(mlflow.get_tracking_uri())
-
-        with open(os.path.join(model_source_dir, 'RUN_ID_URL'), 'w') as f:
-            f.write('{}/#/experiments/{}/runs/{}'.format(mlflow.get_tracking_uri(), active_run.info.experiment_id,
-                                                         active_run.info.run_id))
 
         return submitted_run
     elif backend == "emr":

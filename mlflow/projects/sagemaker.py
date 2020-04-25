@@ -200,14 +200,16 @@ def _make_tarfile(output_filename, source_dir, archive_name, custom_filter=None)
 
 
 # def run_sagemaker_training_job(uri, work_dir, experiment_id, run_id, sagemaker_config):
-def run_sagemaker_training_job(sagemaker_config, uri=None, experiment_id=None, run_id=None, work_dir=None, project=None, synchronous=None,
+def run_sagemaker_training_job(sagemaker_config, uri=None, experiment_id=None, run_id=None, work_dir=None, project=None,
+                               model_source_dir=None, synchronous=None,
                                mode='training'):
     job_runner = SagemakerCodeBuildJobRunner(experiment_id, run_id, sagemaker_config, uri, work_dir, project, mode)
     job_runner.setup_tags()
     job_runner.setup_channels()
     job_runner.run()
 
-    return SagemakerSubmittedRun(sagemaker_config, experiment_id, run_id, uri, work_dir, project, synchronous, mode)
+    return SagemakerSubmittedRun(sagemaker_config, experiment_id, run_id, uri, work_dir, project, model_source_dir,
+                                 synchronous, mode)
     # env_vars = {
     #     tracking._TRACKING_URI_ENV_VAR: tracking_uri,
     #     tracking._EXPERIMENT_ID_ENV_VAR: experiment_id,
@@ -376,12 +378,14 @@ class SagemakerSubmittedRun(SubmittedRun):
     :param job_namespace: Sagemaker job namespace.
     """
 
-    def __init__(self, sagemaker_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous, mode):
+    def __init__(self, sagemaker_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, model_source_dir,
+                 synchronous, mode):
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri
         self._work_dir = work_dir
         self._project = project
+        self._model_source_dir = model_source_dir
         self.sagemaker_config = sagemaker_config
         self.synchronous = synchronous
         self.training_job_name = sagemaker_config[TRAINING_JOB_NAME]
@@ -401,4 +405,18 @@ class SagemakerSubmittedRun(SubmittedRun):
         if job_status != 'Completed':
             _logger.error('%s Job did not complete successfully. Current Status: %s', self.mode, job_status)
             raise Exception('%s Job: %s failed with a status - %s', self.mode, self.training_job_name, job_status)
+
+        # If the training went well then write the files to disk
+        with open(os.path.join(self._model_source_dir, 'RUN_ID'), 'w') as f:
+            f.write(self._mlflow_run_id)
+
+        with open(os.path.join(self._model_source_dir, 'EXPERIMENT_ID'), 'w') as f:
+            f.write(self._mlflow_experiment_id)
+
+        with open(os.path.join(self._model_source_dir, 'TRACKING_URL'), 'w') as f:
+            f.write(get_tracking_uri())
+
+        with open(os.path.join(self._model_source_dir, 'RUN_ID_URL'), 'w') as f:
+            f.write('{}/#/experiments/{}/runs/{}'.format(get_tracking_uri(), self._mlflow_experiment_id,
+                                                         self._mlflow_run_id))
         return True
