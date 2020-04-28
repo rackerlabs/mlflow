@@ -53,9 +53,8 @@ pre_reqs() {{
     sudo /usr/bin/easy_install-3.6 pip
     sudo /usr/local/bin/pip3 install pip --upgrade
     sudo /usr/local/bin/pip3 install --ignore-installed configparser==3.5.0 # ll /usr/lib/python2.7/dist-packages/backports/
-    sudo /usr/local/bin/pip3 install python-dateutil==2.5.0 pyarrow ipython sklearn tensorflow keras
-    sudo /usr/local/bin/pip3 install git+https://github.com/jerrygb/mlflow.git@modelfactory
-    sudo /usr/local/bin/pip3 install python-dateutil --upgrade
+    # sudo /usr/local/bin/pip3 install python-dateutil==2.5.0 pyarrow ipython sklearn tensorflow keras
+    # sudo /usr/local/bin/pip3 install python-dateutil --upgrade
     sudo sed -i -e '$a\export PYSPARK_PYTHON=/usr/bin/python3' /etc/spark/conf/spark-env.sh
 
     wget -L https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
@@ -162,7 +161,7 @@ env
 cd {source_directory}
 eval "$(/mnt/miniconda/bin/conda shell.bash hook)"
 conda activate $MLFLOW_CONDA_ENV_NAME
-pip install git+https://github.com/jerrygb/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
+pip install git+https://github.com/rackerlabs/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
 mlflow run --ignore-duplicate-parameters --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
 {output_tasks}
 """
