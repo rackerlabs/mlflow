@@ -1022,15 +1022,11 @@ def _parse_emr_config(backend_config, mode=None):
                     }
                 }
             ],
-            "TerminationProtected": False,
-            "KeepJobFlowAliveWhenNoSteps": False
         },
         "VisibleToAllUsers": True,
         "Applications": [{'Name': 'Hadoop'}, {'Name': 'Spark'}],
         "JobFlowRole": "EMR_EC2_DefaultRole",
         "ServiceRole": "EMR_DefaultRole",
-        "TerminationProtected": False,
-        "KeepJobFlowAliveWhenNoSteps": False
     }
 
     if not backend_config:

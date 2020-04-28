@@ -707,16 +707,16 @@ class EmrSubmittedRun(SubmittedRun):
             job_status = client.describe_cluster(ClusterId=self.job_flow_id)['Cluster']['Status']
             if job_status['State'] in ['TERMINATED_WITH_ERRORS']:
                 _logger.error('Cluster did not complete jobs successfully. Current Status: %s', job_status)
-                raise MlflowException('EMR Backend Job: %s failed with a State - %s', self.cluster_name,
-                                      job_status['State'])
+                raise MlflowException('EMR Backend Job: {} failed with a State - {}'.format(self.cluster_name,
+                                      job_status['State']))
             elif job_status['State'] in ['TERMINATING']:
                 _logger.info('Cluster completed the jobs. Terminating now. Current Status: %s', job_status)
                 if job_status['StateChangeReason'].get('Code', '') == 'STEP_FAILURE':
                     _logger.error(
                         'Cluster completed the jobs. But some of steps/bootstrapping failed. Error Message: %s',
                         job_status['StateChangeReason'].get('Message', ''))
-                    raise MlflowException('EMR Backend Job: %s failed. Reason: %s', self.cluster_name,
-                                          job_status['StateChangeReason'])
+                    raise MlflowException('EMR Backend Job: {} failed. Reason: {}'.format(self.cluster_name,
+                                          job_status['StateChangeReason']))
                 if job_status['StateChangeReason'].get('Code', '') == 'ALL_STEPS_COMPLETED':
                     _logger.info(
                         'EMR Cluster (%s) completed the job steps. Waiting for terminating the cluster. '
