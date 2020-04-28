@@ -162,7 +162,7 @@ cd {source_directory}
 eval "$(/mnt/miniconda/bin/conda shell.bash hook)"
 conda activate $MLFLOW_CONDA_ENV_NAME
 pip install git+https://github.com/rackerlabs/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
-mlflow run --ignore-duplicate-parameters --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
+mlflow run --ignore-duplicate-parameters --entry-point {entry_point} --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
 {output_tasks}
 """
 
@@ -306,14 +306,16 @@ def _make_tarfile(output_filename, source_dir, archive_name, custom_filter=None)
         os.remove(unzipped_filename)
 
 
-def run_emr_training_job(emr_config, uri, experiment_id, run_id, work_dir, project, synchronous, environment_config):
-    job_runner = EmrCodeBuildJobRunner(experiment_id, run_id, emr_config, uri, work_dir, project, environment_config)
+def run_emr_training_job(emr_config, uri, experiment_id, run_id, work_dir, project, mode, entry_point, synchronous,
+                         environment_config):
+    job_runner = EmrCodeBuildJobRunner(experiment_id, run_id, emr_config, uri, work_dir, mode, entry_point, project,
+                                       environment_config)
     job_runner.upload_files()
     job_runner.setup_tags()
     job_runner.setup_code_and_environment()
     job_runner.run()
 
-    return EmrSubmittedRun(emr_config, experiment_id, run_id, uri, work_dir, project, synchronous,
+    return EmrSubmittedRun(emr_config, mode, experiment_id, run_id, uri, work_dir, project, synchronous,
                            job_runner.job_flow_id)
     # env_vars = {
     #     tracking._TRACKING_URI_ENV_VAR: tracking_uri,
@@ -385,7 +387,8 @@ def resolve_output(output):
 
 
 class EmrRunner(object):
-    def __init__(self, mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir, project, environment_config):
+    def __init__(self, mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir, mode, entry_point, project,
+                 environment_config):
         _logger.info('EMR Runner %s', emr_config)
         _logger.info('Environment Config %s', environment_config)
         self._mlflow_run_id = mlflow_run_id
@@ -405,6 +408,8 @@ class EmrRunner(object):
         self.service_role = emr_config['ServiceRole']
         self.applications = emr_config['Applications']
         self.log_uri = emr_config["LogUri"]
+        self.mode = mode
+        self.entry_point = entry_point
         self.visible_to_all_users = emr_config["VisibleToAllUsers"]
         self.cluster_name = emr_config[CLUSTER_NAME]
         self.mode = emr_config[MODE]
@@ -480,7 +485,8 @@ class EmrRunner(object):
                         input_tasks='\n'.join(self.input_tasks_list),
                         output_tasks='\n'.join(self.output_tasks_list),
                         source_directory=os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME),
-                        run_id=self._mlflow_run_id
+                        run_id=self._mlflow_run_id,
+                        entry_point=self.entry_point
                     )
                 )
             s3_setup_script_key = '{}/{}'.format(self.prefix, SETUP_SCRIPT)
@@ -618,9 +624,10 @@ class EmrRunner(object):
 
 class EmrCodeBuildJobRunner(EmrRunner):
 
-    def __init__(self, mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir, project, environment_config):
+    def __init__(self, mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir, mode, entry_point, project,
+                 environment_config):
         super(EmrCodeBuildJobRunner, self).__init__(mlflow_experiment_id, mlflow_run_id, emr_config, uri, work_dir,
-                                                    project, environment_config)
+                                                    mode, entry_point, project, environment_config)
 
         self._fetch_codebuild_tags()
         self.prefix = '{}/{}/{}-{}'.format(self._canonical_name, self._codebuild_stage,
@@ -677,11 +684,12 @@ class EmrSubmittedRun(SubmittedRun):
     :param job_namespace: Sagemaker job namespace.
     """
 
-    def __init__(self, emr_config, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous,
+    def __init__(self, emr_config, mode, mlflow_experiment_id, mlflow_run_id, uri, work_dir, project, synchronous,
                  job_flow_id):
         self._mlflow_run_id = mlflow_run_id
         self._mlflow_experiment_id = mlflow_experiment_id
         self._uri = uri
+        self.mode = mode
         self._work_dir = work_dir
         self._project = project
         self.emr_config = emr_config
@@ -708,7 +716,7 @@ class EmrSubmittedRun(SubmittedRun):
             if job_status['State'] in ['TERMINATED_WITH_ERRORS']:
                 _logger.error('Cluster did not complete jobs successfully. Current Status: %s', job_status)
                 raise MlflowException('EMR Backend Job: {} failed with a State - {}'.format(self.cluster_name,
-                                      job_status['State']))
+                                                                                            job_status['State']))
             elif job_status['State'] in ['TERMINATING']:
                 _logger.info('Cluster completed the jobs. Terminating now. Current Status: %s', job_status)
                 if job_status['StateChangeReason'].get('Code', '') == 'STEP_FAILURE':
@@ -716,7 +724,8 @@ class EmrSubmittedRun(SubmittedRun):
                         'Cluster completed the jobs. But some of steps/bootstrapping failed. Error Message: %s',
                         job_status['StateChangeReason'].get('Message', ''))
                     raise MlflowException('EMR Backend Job: {} failed. Reason: {}'.format(self.cluster_name,
-                                          job_status['StateChangeReason']))
+                                                                                          job_status[
+                                                                                              'StateChangeReason']))
                 if job_status['StateChangeReason'].get('Code', '') == 'ALL_STEPS_COMPLETED':
                     _logger.info(
                         'EMR Cluster (%s) completed the job steps. Waiting for terminating the cluster. '
@@ -725,7 +734,8 @@ class EmrSubmittedRun(SubmittedRun):
                 _logger.info('EMR Cluster (%s) terminated. Current Status: %s', self.job_flow_id, job_status)
                 break
             else:
-                _logger.info('EMR Cluster (%s) is currently processing the job. Current Status: %s', self.job_flow_id,
+                _logger.info('%s mode EMR Cluster (%s) is currently processing the job. Current Status: %s',
+                             self.mode.capitalize(), self.job_flow_id,
                              job_status)
             time.sleep(EMR_CHECK_INTERVAL)
 

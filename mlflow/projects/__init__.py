@@ -311,7 +311,7 @@ def _run(
         )
         model_source_dir = emr_config[MODEL_SRC_DIR]
         submitted_run = emr.run_emr_training_job(emr_config, uri, active_run.info.experiment_id,
-                                                 active_run.info.run_id, work_dir, project,
+                                                 active_run.info.run_id, work_dir, project, mode, entry_point,
                                                  synchronous=synchronous, environment_config=environment_config)
 
         with open(os.path.join(model_source_dir, 'RUN_ID'), 'w') as f:
