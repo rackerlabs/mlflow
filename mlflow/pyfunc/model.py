@@ -220,7 +220,7 @@ def _load_pyfunc(model_path):
             model_path, saved_artifact_info[CONFIG_KEY_ARTIFACT_RELATIVE_PATH])
 
     context = PythonModelContext(artifacts=artifacts)
-    python_model.upload_files(context=context)
+    python_model.load_context(context=context)
     return _PythonModelPyfuncWrapper(python_model=python_model, context=context)
 
 
