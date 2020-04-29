@@ -1038,10 +1038,10 @@ def _parse_emr_config(backend_config, mode=None):
     if "ClusterName" not in emr_config.keys():
         raise ExecutionException("Could not find ClusterName in backend_config.")
 
-    if "Input" not in emr_config.keys():
-        raise ExecutionException(
-            "Could not find Input in backend_config."
-        )
+    # if "Input" not in emr_config.keys():
+    #     raise ExecutionException(
+    #         "Could not find Input in backend_config."
+    #     )
 
     if mode.lower() == 'inference':
         if "Output" not in emr_config.keys():

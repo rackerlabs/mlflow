@@ -317,7 +317,7 @@ class SagemakerRunner(object):
 
 class SagemakerCodeBuildJobRunner(SagemakerRunner):
     def __init__(self, mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir, project, mode):
-        super(SagemakerRunner, self).__init__(mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir,
+        super(SagemakerCodeBuildJobRunner, self).__init__(mlflow_experiment_id, mlflow_run_id, sagemaker_config, uri, work_dir,
                                               project, mode)
         self._fetch_codebuild_tags()
 
