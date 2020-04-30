@@ -99,6 +99,7 @@ def train_sagemaker():
 
     set_tracking_uri(tracking_server_uri)
     if current_mode == INFERENCE_MODE:
+        # TODO: mode decides the entry point
         run(uri='/opt/ml/code/src', parameters=hyperparameters, run_id=run_id, entry_point=current_mode,
             experiment_id=experiment_id, ignore_duplicate_params=True, mode=current_mode)
     else:

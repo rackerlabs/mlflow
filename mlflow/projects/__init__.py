@@ -1023,6 +1023,8 @@ def _parse_emr_config(backend_config, mode=None):
                 }
             ],
         },
+        "MaxIdleTimeInSeconds": 3600,
+        "MaxSecondsEndOfHour" : 300,
         "VisibleToAllUsers": True,
         "Applications": [{'Name': 'Hadoop'}, {'Name': 'Spark'}],
         "JobFlowRole": "EMR_EC2_DefaultRole",

@@ -55,7 +55,6 @@ pre_reqs() {{
     sudo /usr/local/bin/pip3 install --ignore-installed configparser==3.5.0 # ll /usr/lib/python2.7/dist-packages/backports/
     # sudo /usr/local/bin/pip3 install python-dateutil==2.5.0 pyarrow ipython sklearn tensorflow keras
     # sudo /usr/local/bin/pip3 install python-dateutil --upgrade
-    sudo sed -i -e '$a\export PYSPARK_PYTHON=/usr/bin/python3' /etc/spark/conf/spark-env.sh
 
     wget -L https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
     bash ~/miniconda.sh -b -p /mnt/miniconda
@@ -78,7 +77,8 @@ env
 mkdir -p {source_root_dir}
 tar --warning=no-timestamp -xvf source_dir.tgz -C {source_root_dir}
 cd {source_directory}
-conda env create -f conda.yaml -n $MLFLOW_CONDA_ENV_NAME"""
+conda env create -f conda.yaml -n $MLFLOW_CONDA_ENV_NAME
+"""
 
 # Copyright 2013 Lyft
 # Copyright 2014 Alex Konradi
@@ -160,6 +160,7 @@ env
 {input_tasks}
 cd {source_directory}
 eval "$(/mnt/miniconda/bin/conda shell.bash hook)"
+sudo sed -i -e '$a\export PYSPARK_PYTHON=/mnt/miniconda/envs/'"$MLFLOW_CONDA_ENV_NAME"'/bin/python3' /etc/spark/conf/spark-env.sh
 conda activate $MLFLOW_CONDA_ENV_NAME
 pip install git+https://github.com/rackerlabs/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
 mlflow run --ignore-duplicate-parameters --entry-point {entry_point} --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
@@ -407,13 +408,15 @@ class EmrRunner(object):
         self.jobflow_role = emr_config['JobFlowRole']
         self.service_role = emr_config['ServiceRole']
         self.applications = emr_config['Applications']
+        self.max_secs_idle = emr_config['MaxIdleTimeInSeconds']
+        self.max_secs_end_of_hour = emr_config['MaxSecondsEndOfHour']
         self.log_uri = emr_config["LogUri"]
         self.mode = mode
         self.entry_point = entry_point
         self.visible_to_all_users = emr_config["VisibleToAllUsers"]
         self.cluster_name = emr_config[CLUSTER_NAME]
         self.mode = emr_config[MODE]
-        self.tags = []
+        self.tags = emr_config['Tags'] if emr_config['Tags'] else {}
         self.session = boto3.Session()
         self.region = self.session.region_name or "us-east-2"
         store = _get_store()
@@ -421,6 +424,7 @@ class EmrRunner(object):
         _, self.bucket_name, self.prefix = parse_uri(artifact_uri)
         self.input_tasks_list = self._setup_input_tasks()
         self.output_tasks_list = self._setup_output_tasks()
+        self._setup_environment()
 
     def upload_files(self):
         self.source_location = upload_source_code(self._work_dir, self.bucket_name, self.prefix)
@@ -473,8 +477,8 @@ class EmrRunner(object):
             with open(timeout_script, "w") as f:
                 f.write(
                     _TIMEOUT_SCRIPT.format(
-                        max_secs_idle=300,
-                        min_secs_to_end_of_hour=3600,
+                        max_secs_idle=self.max_secs_idle,
+                        min_secs_to_end_of_hour=self.max_secs_end_of_hour,
                     )
                 )
 
@@ -576,7 +580,8 @@ class EmrRunner(object):
                         # ]
                     }
                 },
-            ]
+            ],
+            Tags=self.tags
         )
         response_code = response['ResponseMetadata']['HTTPStatusCode']
         if response['ResponseMetadata']['HTTPStatusCode'] == 200:
@@ -620,6 +625,38 @@ class EmrRunner(object):
 
     def setup_code_and_environment(self):
         pass
+
+    def _setup_environment(self):
+        environment_list = {}
+        with open('var.env', 'r') as f:
+            for line in f:
+                if line.startswith('export '):
+                    line = line.replace('export ', '')
+                value = '='.join(line.split('=')[1:])
+                value = value.strip('\n').strip('"').strip()
+                if len(value.split(' ')) > 1:
+                    value = "'{}'".format(value)
+                environment_list[line.split('=')[0]] = value
+        environment_list['MLFLOW_RUN_ID'] = self._mlflow_run_id
+        environment_list['MLFLOW_EXPERIMENT_ID'] = self._mlflow_experiment_id
+        for instance in self.instance_groups:
+            instance['Configurations'] = [
+                {
+                    "Classification": "yarn-env",
+                    "Properties": {
+
+                    },
+                    "Configurations": [
+                        {
+                            "Classification": "export",
+                            "Properties": environment_list,
+                            "Configurations": [
+                            ]
+                        }
+                    ]
+                }
+            ]
+            _logger.info('Yarn Configuration: %s', instance['Configurations'])
 
 
 class EmrCodeBuildJobRunner(EmrRunner):
