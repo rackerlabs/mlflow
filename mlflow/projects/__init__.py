@@ -979,7 +979,7 @@ def _parse_kubernetes_config(backend_config):
 
 
 def _parse_emr_config(backend_config, mode=None):
-    _logger.info('Parse start %s', backend_config)
+    _logger.info('Parse start: %s', backend_config)
     # Defaults for EMR training job submission.
     default_emr_config = {
         "ReleaseLabel": "emr-5.29.0",
@@ -1063,7 +1063,7 @@ def _parse_emr_config(backend_config, mode=None):
     if not emr_config.get('LogUri'):
         emr_config["LogUri"] = "s3://{}/emr_logs/{}".format(backend_config['S3BucketName'], emr_config["ClusterName"])
 
-    _logger.info('Parse end %s', backend_config)
+    _logger.info('Parse end: %s', backend_config)
     return emr_config
 
 

@@ -78,6 +78,25 @@ mkdir -p {source_root_dir}
 tar --warning=no-timestamp -xvf source_dir.tgz -C {source_root_dir}
 cd {source_directory}
 conda env create -f conda.yaml -n $MLFLOW_CONDA_ENV_NAME
+cnt=0
+replaced=0
+# Wait for maximum of 10 minutes for the Spark Application bootstrapping to finish 
+while [ $cnt -lt 60 ]; do
+    if [[ -e "/etc/spark/conf/spark-env.sh" ]]; then
+        sudo sed -i -e '$a\export PYSPARK_PYTHON=/mnt/miniconda/envs/'"$MLFLOW_CONDA_ENV_NAME"'/bin/python3' /etc/spark/conf/spark-env.sh
+        replaced=1
+        break
+    else
+        echo "File /etc/spark/conf/spark-env.sh not found! Likely bootstrapping of Spark Application is ongoing"
+    fi
+    cnt=$[$cnt+1]
+    sleep 10
+done
+
+if [[ $replaced -eq 0 ]]; then
+    echo "/etc/spark/conf/spark-env.sh file was not replaced on all EMR nodes!"
+    exit 1
+fi
 """
 
 # Copyright 2013 Lyft
@@ -160,9 +179,9 @@ env
 {input_tasks}
 cd {source_directory}
 eval "$(/mnt/miniconda/bin/conda shell.bash hook)"
-sudo sed -i -e '$a\export PYSPARK_PYTHON=/mnt/miniconda/envs/'"$MLFLOW_CONDA_ENV_NAME"'/bin/python3' /etc/spark/conf/spark-env.sh
 conda activate $MLFLOW_CONDA_ENV_NAME
 pip install git+https://github.com/rackerlabs/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
+{folder_create_tasks}
 mlflow run --ignore-duplicate-parameters --entry-point {entry_point} --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
 {output_tasks}
 """
@@ -362,9 +381,17 @@ def resolve_input(input):
 def resolve_output(output):
     source = output['Source']
     destination = output['Destination']
+    folder_create_task = []
+    output_task = []
+    command = ''
     d_scheme, _, _ = parse_uri(destination)
     if d_scheme != 's3':
         raise MlflowException('Unknown destination specified as input for EMR Backend. %s', output)
+
+    ####################
+    # Setup Destination
+    ####################
+
     # Setup SSE Encryption
     if output.get('KmsKeyId'):
         key = output.get('KmsKeyId')
@@ -373,18 +400,39 @@ def resolve_output(output):
         sse_suffix = ' --sse aws:kms'
     else:
         sse_suffix = ' --sse AES256'
-    command = ''
-    local_source_type = output.get('SourceType', 'folder').lower()
-    if local_source_type == 'folder':
-        command = 'sync'
-    elif local_source_type == 'file':
-        command = 'cp'
 
-    # If relative path is specified then append the pre-defined source code directory
-    if not source.startswith('/'):
-        source = os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME, source)
-
-    return [f'aws s3 {command} {source} {destination}{sse_suffix}']
+    ####################
+    # Setup Source
+    ####################
+    s_scheme, _, _ = parse_uri(source)
+    if not s_scheme:  # Local/File type
+        if not source.startswith('/'):
+            source = os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME, source)
+        local_source_type = output.get('SourceType', 'folder').lower()
+        if local_source_type == 'folder':
+            command = 'sync'
+            folder = source
+            folder_create_task = [f'mkdir -p {folder}']
+        elif local_source_type == 'file':
+            command = 'cp'
+            folder = '/'.join(source.split('/')[:-1])
+            folder_create_task = [f'mkdir -p {folder}']
+        output_task = [f'aws s3 {command} {source} {destination}{sse_suffix}']
+    elif s_scheme == 'hdfs':    # HDFS type source
+        local_source_type = output.get('SourceType', 'folder').lower()
+        if local_source_type == 'folder':
+            command = 'sync'
+            if source.endswith('/'):
+                source = f'{source}*'
+            else:
+                source = f'{source}/*'
+        elif local_source_type == 'file':
+            command = 'cp'
+        output_task = ['TMP_DIR=$(mktemp -d)',
+                       f'hdfs dfs -copyToLocal {source} $TMP_DIR',
+                       f'aws s3 {command} $TMP_DIR {destination}'
+                       ]
+    return folder_create_task, output_task
 
 
 class EmrRunner(object):
@@ -423,7 +471,7 @@ class EmrRunner(object):
         artifact_uri = store.get_run(self._mlflow_run_id).info.artifact_uri
         _, self.bucket_name, self.prefix = parse_uri(artifact_uri)
         self.input_tasks_list = self._setup_input_tasks()
-        self.output_tasks_list = self._setup_output_tasks()
+        self.folder_create_list, self.output_tasks_list = self._setup_output_tasks()
         self._setup_environment()
 
     def upload_files(self):
@@ -435,15 +483,19 @@ class EmrRunner(object):
 
     def _setup_output_tasks(self):
         output_tasks_list = []
+        folder_create_list = []
         if self.emr_config.get('Output'):
             outputs = self.emr_config['Output']
             if isinstance(outputs, list):
                 for output in outputs:
-                    output_tasks_list = output_tasks_list + resolve_output(output)
-            elif isinstance(outputs, dict):
-                output_tasks_list = resolve_output(outputs)
+                    folder_create_task, output_tasks = resolve_output(output)
 
-        return output_tasks_list
+                    output_tasks_list = output_tasks_list + output_tasks
+                    folder_create_list = folder_create_list + folder_create_task
+            elif isinstance(outputs, dict):
+                folder_create_list, output_tasks_list = resolve_output(outputs)
+
+        return folder_create_list, output_tasks_list
 
     def _setup_input_tasks(self):
         input_tasks_list = []
@@ -488,6 +540,7 @@ class EmrRunner(object):
                         environment_config_location=self.environment_config_location,
                         input_tasks='\n'.join(self.input_tasks_list),
                         output_tasks='\n'.join(self.output_tasks_list),
+                        folder_create_tasks='\n'.join(self.folder_create_list),
                         source_directory=os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME),
                         run_id=self._mlflow_run_id,
                         entry_point=self.entry_point
