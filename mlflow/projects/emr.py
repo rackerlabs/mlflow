@@ -638,12 +638,12 @@ class EmrRunner(object):
                         'Path': 's3://support.elasticmapreduce/spark/maximize-spark-default-config',
                     }
                 },
-                {
-                    'Name': 'Spark Config Script',
-                    'ScriptBootstrapAction': {
-                        'Path': self.spark_config_script
-                    }
-                },
+                # {
+                #     'Name': 'Spark Config Script',
+                #     'ScriptBootstrapAction': {
+                #         'Path': self.spark_config_script
+                #     }
+                # },
             ],
             Steps=[
                 {
@@ -708,7 +708,8 @@ class EmrRunner(object):
         pass
 
     def _setup_environment(self):
-        environment_list = {}
+        yarn_environment_list = {}
+        spark_environment_list = {}
         with open('var.env', 'r') as f:
             for line in f:
                 if line.startswith('export '):
@@ -717,9 +718,12 @@ class EmrRunner(object):
                 value = value.strip('\n').strip('"').strip()
                 if len(value.split(' ')) > 1:
                     value = "'{}'".format(value)
-                environment_list[line.split('=')[0]] = value
-        environment_list['MLFLOW_RUN_ID'] = self._mlflow_run_id
-        environment_list['MLFLOW_EXPERIMENT_ID'] = self._mlflow_experiment_id
+                yarn_environment_list[line.split('=')[0]] = value
+        yarn_environment_list['MLFLOW_RUN_ID'] = self._mlflow_run_id
+        yarn_environment_list['MLFLOW_EXPERIMENT_ID'] = self._mlflow_experiment_id
+        mlflow_env_name = yarn_environment_list['MLFLOW_CONDA_ENV_NAME']
+        yarn_environment_list['PYSPARK_PYTHON'] = f'/mnt/miniconda/envs/{mlflow_env_name}/bin/python3'
+        spark_environment_list['PYSPARK_PYTHON'] = f'/mnt/miniconda/envs/{mlflow_env_name}/bin/python3'
         for instance in self.instance_groups:
             instance['Configurations'] = [
                 {
@@ -730,12 +734,27 @@ class EmrRunner(object):
                     "Configurations": [
                         {
                             "Classification": "export",
-                            "Properties": environment_list,
+                            "Properties": yarn_environment_list,
+                            "Configurations": [
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "Classification": "spark-env",
+                    "Properties": {
+
+                    },
+                    "Configurations": [
+                        {
+                            "Classification": "export",
+                            "Properties": spark_environment_list,
                             "Configurations": [
                             ]
                         }
                     ]
                 }
+
             ]
             _logger.info('Yarn Configuration: %s', instance['Configurations'])
 
