@@ -41,6 +41,7 @@ SOURCE_ROOT_DIR = "/mnt/mlflow-code/"  # Directory where the source is setup.
 SOURCE_ARCHIVE_NAME = "src"  # default name of the archive
 SETUP_SCRIPT = "setup.sh"
 RUN_SCRIPT = "run.sh"
+SPARK_CONFIG_SCRIPT = "spark_config.sh"
 EMR_CHECK_INTERVAL = 60  # seconds
 TRAINING_MODE = 'Training'
 INFERENCE_MODE = 'Inference'
@@ -78,25 +79,6 @@ mkdir -p {source_root_dir}
 tar --warning=no-timestamp -xvf source_dir.tgz -C {source_root_dir}
 cd {source_directory}
 conda env create -f conda.yaml -n $MLFLOW_CONDA_ENV_NAME
-cnt=0
-replaced=0
-# Wait for maximum of 10 minutes for the Spark Application bootstrapping to finish 
-while [ $cnt -lt 60 ]; do
-    if [[ -e "/etc/spark/conf/spark-env.sh" ]]; then
-        sudo sed -i -e '$a\export PYSPARK_PYTHON=/mnt/miniconda/envs/'"$MLFLOW_CONDA_ENV_NAME"'/bin/python3' /etc/spark/conf/spark-env.sh
-        replaced=1
-        break
-    else
-        echo "File /etc/spark/conf/spark-env.sh not found! Likely bootstrapping of Spark Application is ongoing"
-    fi
-    cnt=$[$cnt+1]
-    sleep 10
-done
-
-if [[ $replaced -eq 0 ]]; then
-    echo "/etc/spark/conf/spark-env.sh file was not replaced on all EMR nodes!"
-    exit 1
-fi
 """
 
 # Copyright 2013 Lyft
@@ -170,6 +152,31 @@ done
 ) 0<&- &> /dev/null &
 """
 
+_SPARK_CONFIG_SCRIPT = """#!/bin/bash
+aws s3 cp {environment_config_location} var.env
+chmod +x var.env
+source var.env
+cnt=0
+replaced=0
+# Wait for maximum of 10 minutes for the Spark Application bootstrapping to finish 
+while [ $cnt -lt 60 ]; do
+    if [[ -e "/etc/spark/conf/spark-env.sh" ]]; then
+        sudo sed -i -e '$a\export PYSPARK_PYTHON=/mnt/miniconda/envs/'"$MLFLOW_CONDA_ENV_NAME"'/bin/python3' /etc/spark/conf/spark-env.sh
+        replaced=1
+        break
+    else
+        echo "File /etc/spark/conf/spark-env.sh not found! Likely bootstrapping of Spark Application is ongoing"
+    fi
+    cnt=$[$cnt+1]
+    sleep 10
+done
+
+if [[ $replaced -eq 0 ]]; then
+    echo "/etc/spark/conf/spark-env.sh file was not replaced on all EMR nodes!"
+    exit 1
+fi
+
+"""
 _MLFLOW_RUN_SCRIPT = """#!/bin/bash
 aws s3 cp {environment_config_location} var.env
 chmod +x var.env
@@ -418,7 +425,7 @@ def resolve_output(output):
             folder = '/'.join(source.split('/')[:-1])
             folder_create_task = [f'mkdir -p {folder}']
         output_task = [f'aws s3 {command} {source} {destination}{sse_suffix}']
-    elif s_scheme == 'hdfs':    # HDFS type source
+    elif s_scheme == 'hdfs':  # HDFS type source
         local_source_type = output.get('SourceType', 'folder').lower()
         if local_source_type == 'folder':
             command = 'sync'
@@ -479,7 +486,7 @@ class EmrRunner(object):
         self.environment_config_location = upload_environment(self.bucket_name,
                                                               self.prefix, self.environment_config)
 
-        self.setup_bootstrap_script, self.timeout_script, self.run_script = self.upload_scripts()
+        self.setup_bootstrap_script, self.timeout_script, self.run_script, self.spark_config_script = self.upload_scripts()
 
     def _setup_output_tasks(self):
         output_tasks_list = []
@@ -515,6 +522,7 @@ class EmrRunner(object):
             setup_script = os.path.join(cwd, SETUP_SCRIPT)
             timeout_script = os.path.join(cwd, TIMEOUT_SCRIPT)
             run_script = os.path.join(cwd, RUN_SCRIPT)
+            spark_config_script = os.path.join(cwd, SPARK_CONFIG_SCRIPT)
             with open(setup_script, "w") as f:
                 f.write(
                     _EMR_BOOTSTRAP_SETUP_TEMPLATE.format(
@@ -546,9 +554,17 @@ class EmrRunner(object):
                         entry_point=self.entry_point
                     )
                 )
+            with open(spark_config_script, "w") as f:
+                f.write(
+                    _SPARK_CONFIG_SCRIPT.format(
+                        environment_config_location=self.environment_config_location,
+                    )
+                )
+
             s3_setup_script_key = '{}/{}'.format(self.prefix, SETUP_SCRIPT)
             s3_timeout_script_key = '{}/{}'.format(self.prefix, TIMEOUT_SCRIPT)
             s3_run_script_key = '{}/{}'.format(self.prefix, RUN_SCRIPT)
+            s3_spark_config_script_key = '{}/{}'.format(self.prefix, SPARK_CONFIG_SCRIPT)
             client = boto3.client('s3')
             transfer = boto3.s3.transfer.S3Transfer(client=client)
 
@@ -570,7 +586,13 @@ class EmrRunner(object):
             run_script_uri = f's3://{self.bucket_name}/{s3_run_script_key}'
             _logger.info('Uploaded the run script to %s', run_script_uri)
 
-            return setup_script_uri, timeout_script_uri, run_script_uri
+            transfer.upload_file(filename=spark_config_script,
+                                 bucket=self.bucket_name, key=s3_spark_config_script_key,
+                                 extra_args={'ServerSideEncryption': 'AES256'})
+            spark_config_script_uri = f's3://{self.bucket_name}/{s3_spark_config_script_key}'
+            _logger.info('Uploaded the spark config script to %s', spark_config_script_uri)
+
+            return setup_script_uri, timeout_script_uri, run_script_uri, spark_config_script_uri
 
     def setup_tags(self):
         self._setup_mlflow_tags()
@@ -614,6 +636,12 @@ class EmrRunner(object):
                     'Name': 'Maximize Spark Default Config',
                     'ScriptBootstrapAction': {
                         'Path': 's3://support.elasticmapreduce/spark/maximize-spark-default-config',
+                    }
+                },
+                {
+                    'Name': 'Spark Config Script',
+                    'ScriptBootstrapAction': {
+                        'Path': self.spark_config_script
                     }
                 },
             ],
