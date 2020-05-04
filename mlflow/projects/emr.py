@@ -495,11 +495,23 @@ class EmrRunner(object):
             outputs = self.emr_config['Output']
             if isinstance(outputs, list):
                 for output in outputs:
+                    # Append Cluster Name
+                    destination = output['Destination']
+                    cluster_name = self.cluster_name
+                    if not destination.endswith('/'):
+                        destination = f'{destination}/'
+                    output['Destination'] = f'{destination}{cluster_name}'
                     folder_create_task, output_tasks = resolve_output(output)
 
                     output_tasks_list = output_tasks_list + output_tasks
                     folder_create_list = folder_create_list + folder_create_task
             elif isinstance(outputs, dict):
+                # Append Cluster Name
+                destination = outputs['Destination']
+                cluster_name = self.cluster_name
+                if not destination.endswith('/'):
+                    destination = f'{destination}/'
+                outputs['Destination'] = f'{destination}{cluster_name}'
                 folder_create_list, output_tasks_list = resolve_output(outputs)
 
         return folder_create_list, output_tasks_list

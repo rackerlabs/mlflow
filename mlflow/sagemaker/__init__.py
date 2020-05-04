@@ -657,6 +657,7 @@ def _create_sagemaker_endpoint(endpoint_name, model_name, model_s3_path, model_u
             },
         ],
     )
+    # TODO: create mechanism to add additional tags and program the variant
     _logger.info("Created endpoint configuration with arn: %s",
                  endpoint_config_response["EndpointConfigArn"])
 
