@@ -187,7 +187,8 @@ env
 cd {source_directory}
 eval "$(/mnt/miniconda/bin/conda shell.bash hook)"
 conda activate $MLFLOW_CONDA_ENV_NAME
-pip install git+https://github.com/rackerlabs/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
+# TODO: Either this or maintain on conda.yaml
+pip install mlflow-sagemaker=={mlflow_version}
 {folder_create_tasks}
 mlflow run --ignore-duplicate-parameters --entry-point {entry_point} --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
 ret_code=$?
@@ -573,6 +574,7 @@ class EmrRunner(object):
                         folder_create_tasks='\n'.join(self.folder_create_list),
                         source_directory=os.path.join(SOURCE_ROOT_DIR, SOURCE_ARCHIVE_NAME),
                         run_id=self._mlflow_run_id,
+                        mlflow_version=__version__,
                         entry_point=self.entry_point
                     )
                 )
