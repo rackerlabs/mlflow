@@ -190,6 +190,11 @@ conda activate $MLFLOW_CONDA_ENV_NAME
 pip install git+https://github.com/rackerlabs/mlflow.git@modelfactory # TODO: Remove once we have stable release (TEMP)
 {folder_create_tasks}
 mlflow run --ignore-duplicate-parameters --entry-point {entry_point} --run-id {run_id} {source_directory} $MLFLOW_PARSED_PARAMETERS
+ret_code=$?
+if [[ $ret_code -ne 0 ]]; then
+    echo "MLFlow run: {run_id} has failed."
+    exit 2
+fi
 {output_tasks}
 """
 
@@ -494,24 +499,29 @@ class EmrRunner(object):
         if self.emr_config.get('Output'):
             outputs = self.emr_config['Output']
             if isinstance(outputs, list):
+                cnt = 1
                 for output in outputs:
                     # Append Cluster Name
                     destination = output['Destination']
                     cluster_name = self.cluster_name
                     if not destination.endswith('/'):
                         destination = f'{destination}/'
-                    output['Destination'] = f'{destination}{cluster_name}'
+                    destination = f'{destination}{cluster_name}'
+                    output['Destination'] = destination
+                    self.tags.append({'Key': f'Output-{cnt}', 'Value': destination})
                     folder_create_task, output_tasks = resolve_output(output)
-
                     output_tasks_list = output_tasks_list + output_tasks
                     folder_create_list = folder_create_list + folder_create_task
+                    cnt = cnt + 1
             elif isinstance(outputs, dict):
                 # Append Cluster Name
                 destination = outputs['Destination']
                 cluster_name = self.cluster_name
                 if not destination.endswith('/'):
                     destination = f'{destination}/'
-                outputs['Destination'] = f'{destination}{cluster_name}'
+                destination = f'{destination}{cluster_name}'
+                outputs['Destination'] = destination
+                self.tags.append({'Key': 'Output', 'Value': destination})
                 folder_create_list, output_tasks_list = resolve_output(outputs)
 
         return folder_create_list, output_tasks_list
