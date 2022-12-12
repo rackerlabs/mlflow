@@ -20,7 +20,7 @@
     "merge": "1.2.1",
     "plotly.js": "1.50.0",
     "prop-types": "15.6.1",
-    "qs": "6.5.2",
+    "qs": "6.5.3",
     "react": "16.5.2",
     "react-app-rewire-polyfills": "^0.2.0",
     "react-bootstrap": "0.32.1",
