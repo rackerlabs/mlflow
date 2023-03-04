@@ -18,7 +18,7 @@
     "leaflet": "^1.5.1",
     "lodash": "^4.17.11",
     "merge": "1.2.1",
-    "plotly.js": "1.50.0",
+    "plotly.js": "1.58.5",
     "prop-types": "15.6.1",
     "qs": "6.5.2",
     "react": "16.5.2",
